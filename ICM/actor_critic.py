@@ -41,7 +41,7 @@ class ActorCritic(nn.Module):
 
         state_value = self.value(state)
 
-        action_probs = F.softmax(self.policy(state), dim=1)
+        action_probs = F.softmax(self.policy(state), dim=-1)
         action_distribution = Categorical(action_probs)
         action = action_distribution.sample()
         
