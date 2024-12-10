@@ -8,6 +8,7 @@ from ICM.converter import ActionConverter
 from lightsim2grid import LightSimBackend
 from grid2op.Reward import L2RPNSandBoxScore
 import gym
+import os
 
 
 class ActorCritic(nn.Module):
@@ -76,4 +77,15 @@ class ActorCritic(nn.Module):
         del self.logprobs[:]
         del self.state_values[:]
         del self.rewards[:]
+
+
+    def save_model(self, model_name="actor_critic"):
+        torch.save(self.state_dict(), os.path.join(self.config['save_path'], model_name))
+        print(f"model saved at {os.path.join(self.config['save_path'])}")
+        
+    def load_model(self, model_name="actor_critic"):
+        self.load_state_dict(torch.load(os.path.join(self.config['save_path'], model_name)))
+        print(f"Model loaded from {os.path.join(self.config['save_path'])}")
+
+        
 
