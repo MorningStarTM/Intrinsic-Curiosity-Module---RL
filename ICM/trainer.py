@@ -84,9 +84,6 @@ class Trainer:
         test_path = random.choice(paths[900:])
         logging.info(f"Selected Chronics : {test_path}")
 
-        # loading trained agent
-        self.agent.load()
-
         try:
             self.env.set_id(test_path)
             logging.info(f"Selected Chronic loaded")
