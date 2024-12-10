@@ -69,9 +69,10 @@ class Trainer:
 
 
             if episode_id!=0 and episode_id % 5 == 0:
-                print(f"\n#############################################\n\nEvaluating the Agent\n\n#############################################\n\n")
+                print(f"\n\n#############################################\n\nEvaluating the Agent\n\n#############################################\n\n")
                 num_steps, rewards = self.evaluate()
                 if self.best_survival_step < num_steps:
+                    print(f"Agent survived {num_steps}/{self.env.max_episode_duration()} steps")
                     self.agent.save_model(model_name=f"actor_critic_{num_steps}")
                     self.best_survival_step = num_steps
 
