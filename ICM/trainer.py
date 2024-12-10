@@ -6,6 +6,7 @@ from ICM.converter import ActionConverter
 import torch.optim as optim
 from grid2op.Exceptions import *
 from tqdm import tqdm
+from ICM.Utils.logger import logging
 
 
 class Trainer:
@@ -50,14 +51,14 @@ class Trainer:
 
 
                 except NoForecastAvailable as e:
-                    print(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
+                    logging.info(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
                     self.env.set_id(episode_id)
                     obs = self.env.reset()
                     self.env.fast_forward_chronics(i-1)
                     continue
 
                 except Grid2OpException as e:
-                    print(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
+                    logging.info(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
                     self.env.set_id(episode_id)
                     obs = self.env.reset()
                     self.env.fast_forward_chronics(i-1)
