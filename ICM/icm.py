@@ -49,3 +49,21 @@ class ICM(nn.Module):
         pred_next_state = self.forward_model(torch.cat([state, action], dim=-1))
 
         return state_, pred_next_state, action_pred
+    
+
+    def calc_loss(self, state_, pred_state, action, action_pred):
+        Lf = nn.MSELoss(state_, pred_state)
+        Lf = self.config['beta'] * Lf
+
+        Li = nn.CrossEntropyLoss(action, action_pred)
+        Li = (1-self.config['beta']) * Li
+
+        intrinsic_reward = self.config['alpha'] * ((state_, pred_state).pow(2)).mean(dim=1)
+        return intrinsic_reward, Li, Lf
+    
+
+    
+
+
+    
+
