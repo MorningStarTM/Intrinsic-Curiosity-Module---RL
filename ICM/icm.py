@@ -3,12 +3,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-
+from torch.distributions import Categorical
 
 
 class ICM(nn.Module):
     def __init__(self, config) -> None:
-        super(ICM).__init__()
+        super(ICM, self).__init__()
         self.config = config
 
         
@@ -44,21 +44,30 @@ class ICM(nn.Module):
         state = self.state(state)
         state_ = self.state_(next_state)
 
-        action_pred = self.inverse_model(torch.cat([state, state_], dim=-1))
+        action_ = self.inverse_model(torch.cat([state, state_], dim=-1))
+        action_probs = F.softmax(action_, dim=-1)
+        action_distribution = Categorical(action_probs)
+        action_pred = action_distribution.sample()
 
         pred_next_state = self.forward_model(torch.cat([state, action], dim=-1))
 
-        return state_, pred_next_state, action_pred
+        return state_, pred_next_state, action_pred, action_
     
 
     def calc_loss(self, state_, pred_state, action, action_pred):
-        Lf = nn.MSELoss(state_, pred_state)
+        inverse_loss = nn.MSELoss()
+        Lf = inverse_loss(state_, pred_state)
         Lf = self.config['beta'] * Lf
 
-        Li = nn.CrossEntropyLoss(action, action_pred)
+        forward_loss = nn.CrossEntropyLoss()
+        action_pred = action_pred.unsqueeze(0).float()
+        act = torch.tensor(action, dtype=torch.long, device=self.device).unsqueeze(0)
+        print(f"action pred : {action_pred.shape}")
+        print(f"action : {act.shape}")
+        Li = forward_loss(action_pred, act)
         Li = (1-self.config['beta']) * Li
 
-        intrinsic_reward = self.config['alpha'] * ((state_, pred_state).pow(2)).mean(dim=1)
+        intrinsic_reward = self.config['alpha'] * ((state_ - pred_state).pow(2)).mean(dim=0)
         return intrinsic_reward, Li, Lf
     
 
