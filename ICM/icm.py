@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
-
+from ICM.memory import Memory
 
 class ICM(nn.Module):
     def __init__(self, config) -> None:
@@ -38,7 +38,7 @@ class ICM(nn.Module):
         self.optimizer = optim.Adam(self.parameters(), lr=self.config['icm_lr'])
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.to(device=self.device)
-
+        self.memory = Memory()
 
     def forward(self, action, state, next_state):
         state = self.state(state)
@@ -71,8 +71,50 @@ class ICM(nn.Module):
         return intrinsic_reward, Li, Lf
     
 
-    
+
+    def learn(self, state_, pred_state, action, action_pred, batch_size=32):
+        # Convert inputs to tensors
+        state_ = torch.tensor(state_, dtype=torch.float, device=self.device)
+        pred_state = torch.tensor(pred_state, dtype=torch.float, device=self.device)
+        action = torch.tensor(action, dtype=torch.long, device=self.device)
+        action_pred = torch.tensor(action_pred, dtype=torch.float, device=self.device)
+
+        # Initialize total loss
+        total_loss = 0.0
+
+        # Process data in batches
+        num_records = state_.shape[0]
+        for start_idx in range(0, num_records, batch_size):
+            # Define batch indices
+            end_idx = start_idx + batch_size
+            state_batch = state_[start_idx:end_idx]
+            pred_state_batch = pred_state[start_idx:end_idx]
+            action_batch = action[start_idx:end_idx]
+            action_pred_batch = action_pred[start_idx:end_idx]
+
+            # Compute loss for the batch
+            intrinsic_reward, Li, Lf = self.calc_loss(
+                state_batch, pred_state_batch, action_batch, action_pred_batch
+            )
+            batch_loss = Li + Lf
+
+            # Backpropagation and optimizer step
+            self.optimizer.zero_grad()
+            batch_loss.backward()
+            self.optimizer.step()
+
+            # Accumulate loss
+            total_loss += batch_loss.item()
+
+        # Print average loss for the epoch
+        avg_loss = total_loss / (num_records / batch_size)
+        print(f"Average Loss: {avg_loss:.3f}")
 
 
-    
+
+
+
+
+
+
 
