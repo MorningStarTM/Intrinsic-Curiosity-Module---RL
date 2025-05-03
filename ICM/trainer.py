@@ -4,6 +4,7 @@ from lightsim2grid import LightSimBackend
 from grid2op import Environment
 from ICM.converter import ActionConverter
 from ICM.actor_critic import ActorCritic
+from ICM.icm import ICM
 import torch.optim as optim
 from grid2op.Exceptions import *
 from tqdm import tqdm
@@ -20,6 +21,8 @@ class Trainer:
         self.converter = converter
         self.optimizer = optim.Adam(self.agent.parameters(), lr=self.config['lr'], betas=self.config['betas'])
         self.best_survival_step = 0
+        self.update_freq = self.config["update_freq"]#.get("update_freq", 512)
+        self.step_counter = 0
 
     def train(self):
         num_episodes = len(self.env.chronics_handler.subpaths)
@@ -29,7 +32,6 @@ class Trainer:
             print(f"Episode ID : {episode_id}")
             self.env.set_id(episode_id)
             obs = self.env.reset()
-            reward = self.env.reward_range[0]
             done = False
 
             for i in tqdm(range(self.env.max_episode_duration()), desc=f"Episode {episode_id}", leave=True):
@@ -38,6 +40,7 @@ class Trainer:
                     action = self.agent(obs.to_vect()) 
                     obs_, reward, done, _ = self.env.step(self.converter.act(action))
                     self.agent.rewards.append(reward)
+                    self.step_counter += 1
                     obs = obs_
 
                     if done:
@@ -52,6 +55,12 @@ class Trainer:
                         obs_, reward, done, _ = self.env.step(self.converter.act(action))
                         self.agent.rewards.append(reward)
 
+                    if self.step_counter % self.update_freq == 0:
+                        self.optimizer.zero_grad()
+                        loss = self.agent.calculateLoss()
+                        loss.backward()
+                        self.optimizer.step()
+                        self.agent.clearMemory()
 
                 except NoForecastAvailable as e:
                     logging.info(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
@@ -111,3 +120,82 @@ class Trainer:
                 print(f"Error occured {e}")
 
         return num_steps, rewards
+
+
+
+class ICMTrainer:
+    def __init__(self, agent:ActorCritic, env:Environment, converter:ActionConverter, config) -> None:
+        self.agent = agent
+        self.env = env
+        self.config = config
+        self.converter = converter
+        self.icm = ICM(self.config)
+        self.optimizer = optim.Adam(self.agent.parameters(), lr=self.config['lr'], betas=self.config['betas'])
+        self.best_survival_step = 0
+
+
+
+    def train(self, start=0, end=10):
+        num_episodes = len(self.env.chronics_handler.subpaths)
+        train_step = 0
+        for episode_id in range(start, end):
+
+            print(f"Episode ID : {episode_id}")
+            self.env.set_id(episode_id)
+            obs = self.env.reset()
+            done = False
+
+            for i in tqdm(range(self.env.max_episode_duration()), desc=f"Episode {episode_id}", leave=True):
+                train_step += 1
+                try:
+                    action = self.agent(obs.to_vect()) 
+                    obs_, env_reward, done, _ = self.env.step(self.converter.act(action))
+
+                    state_, pred_next_state, action_pred, action_ = self.icm(self.converter.action_idx(action), obs, obs_)
+                    intrinsic_reward, Li, Lf = self.icm.calc_loss(state_=state_, pred_state=pred_next_state, action=self.converter.action_idx(action))
+
+                    self.icm.memory.remember(state_=state_, pred_state=pred_next_state, actions=self.converter.action_idx(action), pred_actions=action_pred)
+
+                    self.agent.rewards.append(intrinsic_reward)
+
+                    obs = obs_
+
+                    if done:
+                        self.env.set_id(episode_id)
+                        
+                        obs = self.env.reset()
+                        done = False
+                        reward = self.env.reward_range[0]
+
+                        self.env.fast_forward_chronics(i - 1)
+                        action = self.agent(obs.to_vect()) 
+                        obs_, reward, done, _ = self.env.step(self.converter.act(action))
+                        self.agent.rewards.append(reward)
+
+                    
+                    if train_step == 1024:
+                        pass
+
+
+                except NoForecastAvailable as e:
+                    logging.info(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
+                    self.env.set_id(episode_id)
+                    obs = self.env.reset()
+                    self.env.fast_forward_chronics(i-1)
+                    continue
+
+                except Grid2OpException as e:
+                    logging.info(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
+                    self.env.set_id(episode_id)
+                    obs = self.env.reset()
+                    self.env.fast_forward_chronics(i-1)
+                    continue 
+
+
+            if episode_id!=0 and episode_id % 5 == 0:
+                print(f"\n\n#############################################\n\nEvaluating the Agent\n\n#############################################\n\n")
+                num_steps, rewards = self.evaluate()
+                if self.best_survival_step < num_steps:
+                    print(f"Agent survived {num_steps}/{self.env.max_episode_duration()} steps")
+                    self.agent.save_model(model_name=f"actor_critic_{num_steps}")
+                    self.best_survival_step = num_steps
