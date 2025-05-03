@@ -35,6 +35,8 @@ class ActorCritic(nn.Module):
         self.state_values = []
         self.rewards = []
 
+        self.to(self.device)
+
 
     def forward(self, state):
         state = torch.tensor(state, device=self.device)
@@ -62,7 +64,7 @@ class ActorCritic(nn.Module):
             rewards.insert(0, dis_reward)
                 
         # normalizing the rewards:
-        rewards = torch.tensor(rewards)
+        rewards = torch.tensor(rewards).to(self.device)
         rewards = (rewards - rewards.mean()) / (rewards.std())
         
         loss = 0
