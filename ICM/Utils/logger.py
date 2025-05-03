@@ -1,16 +1,33 @@
-import logging
+from loguru import logger
 import os
 from datetime import datetime
 
-LOG_FILE = f"{datetime.now().strftime('%m_%d_%Y_%H_%M_%S')}.log"
-logs_path = os.path.join(os.getcwd(), "logs", LOG_FILE)
-os.makedirs(logs_path, exist_ok=True)
+# Create log directory if it doesn't exist
+log_dir = os.path.join(os.getcwd(), "logs")
+os.makedirs(log_dir, exist_ok=True)
 
-LOG_FILE_PATH = os.path.join(logs_path, LOG_FILE)
+# Generate timestamped log file name
+timestamp = datetime.now().strftime('%m_%d_%Y_%H_%M_%S')
+log_file_path = os.path.join(log_dir, f"{timestamp}.log")
 
-logging.basicConfig(
-    filename=LOG_FILE_PATH,
-    format="[ %(asctime)s ] %(lineno)d %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+# Remove default logger and add our own
+logger.remove()  # Remove the default stderr logger
+logger.add(
+    log_file_path,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
+           "<level>{level: <8}</level> | "
+           "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+           "<level>{message}</level>",
+    level="INFO",
+    rotation="10 MB",  # Optional: rotate after 10 MB
+    retention="10 days",  # Optional: keep logs for 10 days
+    compression="zip"  # Optional: compress old logs
+)
 
+# Optional: also log to the console
+logger.add(
+    sink=lambda msg: print(msg, end=""),
+    level="INFO",
+    colorize=True,
+    format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{message}</cyan>"
 )
