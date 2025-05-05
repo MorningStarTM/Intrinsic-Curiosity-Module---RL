@@ -9,6 +9,7 @@ from lightsim2grid import LightSimBackend
 from grid2op.Reward import L2RPNSandBoxScore
 import gym
 import os
+from ICM.Utils.logger import logger
 
 
 class ActorCritic(nn.Module):
@@ -55,7 +56,11 @@ class ActorCritic(nn.Module):
 
 
     def calculateLoss(self, gamma=0.99):
+        if not (self.logprobs and self.state_values and self.rewards):
+            logger.error("Warning: Empty memory buffers!")
+            return torch.tensor(0.0, device=self.device)
         
+
         # calculating discounted rewards:
         rewards = []
         dis_reward = 0
@@ -64,14 +69,15 @@ class ActorCritic(nn.Module):
             rewards.insert(0, dis_reward)
                 
         # normalizing the rewards:
+       
         rewards = torch.tensor(rewards).to(self.device)
-        rewards = (rewards - rewards.mean()) / (rewards.std())
+        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
         
         loss = 0
         for logprob, value, reward in zip(self.logprobs, self.state_values, rewards):
             advantage = reward  - value.item()
             action_loss = -logprob * advantage
-            value_loss = F.smooth_l1_loss(value, reward)
+            value_loss = F.smooth_l1_loss(value, reward.unsqueeze(0))
             loss += (action_loss + value_loss)   
         return loss
     
@@ -83,11 +89,11 @@ class ActorCritic(nn.Module):
 
     def save_model(self, model_name="actor_critic"):
         torch.save(self.state_dict(), os.path.join(self.config['save_path'], model_name))
-        print(f"model saved at {os.path.join(self.config['save_path'])}")
+        logger.info(f"model saved at {os.path.join(self.config['save_path'])}")
         
     def load_model(self, model_name="actor_critic"):
         self.load_state_dict(torch.load(os.path.join(self.config['save_path'], model_name)))
-        print(f"Model loaded from {os.path.join(self.config['save_path'])}")
+        logger.info(f"Model loaded from {os.path.join(self.config['save_path'])}")
 
         
 
