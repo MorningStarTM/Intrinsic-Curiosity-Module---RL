@@ -8,7 +8,7 @@ from ICM.icm import ICM
 import torch.optim as optim
 from grid2op.Exceptions import *
 from tqdm import tqdm
-from ICM.Utils.logger import logging
+from ICM.Utils.logger import logger
 import random
 import inspect
 
@@ -29,7 +29,7 @@ class Trainer:
 
         for episode_id in range(num_episodes-100):
 
-            print(f"Episode ID : {episode_id}")
+            logger.info(f"Episode ID : {episode_id}")
             self.env.set_id(episode_id)
             obs = self.env.reset()
             done = False
@@ -56,6 +56,7 @@ class Trainer:
                         self.agent.rewards.append(reward)
 
                     if self.step_counter % self.update_freq == 0:
+                        logger.info(f"\###########################################\nupdating at {self.step_counter}.....")
                         self.optimizer.zero_grad()
                         loss = self.agent.calculateLoss()
                         loss.backward()
@@ -63,14 +64,14 @@ class Trainer:
                         self.agent.clearMemory()
 
                 except NoForecastAvailable as e:
-                    logging.info(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
+                    logger.error(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
                     self.env.set_id(episode_id)
                     obs = self.env.reset()
                     self.env.fast_forward_chronics(i-1)
                     continue
 
                 except Grid2OpException as e:
-                    logging.info(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
+                    logger.error(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
                     self.env.set_id(episode_id)
                     obs = self.env.reset()
                     self.env.fast_forward_chronics(i-1)
@@ -78,10 +79,10 @@ class Trainer:
 
 
             if episode_id!=0 and episode_id % 5 == 0:
-                print(f"\n\n#############################################\n\nEvaluating the Agent\n\n#############################################\n\n")
+                logger.info(f"\n\n#############################################\n\nEvaluating the Agent\n\n#############################################\n\n")
                 num_steps, rewards = self.evaluate()
                 if self.best_survival_step < num_steps:
-                    print(f"Agent survived {num_steps}/{self.env.max_episode_duration()} steps")
+                    logger.info(f"Agent survived {num_steps}/{self.env.max_episode_duration()} steps")
                     self.agent.save_model(model_name=f"actor_critic_{num_steps}")
                     self.best_survival_step = num_steps
 
@@ -92,14 +93,14 @@ class Trainer:
         rewards = []
         paths = self.env.chronics_handler.subpaths
         test_path = random.choice(paths[900:])
-        logging.info(f"Selected Chronics : {test_path}")
+        logger.info(f"Selected Chronics : {test_path}")
 
         try:
             self.env.set_id(test_path)
-            logging.info(f"Selected Chronic loaded")
+            logger.info(f"Selected Chronic loaded")
         except Exception as e:
-            print("Error occured {e}")
-            logging(f"{self.__class__.__name__}.{__name__} Error Occured")
+            logger.error("Error occured {e}")
+            logger(f"{self.__class__.__name__}.{__name__} Error Occured")
 
         obs = self.env.reset()
         reward = self.env.reward_range[0]
@@ -117,7 +118,7 @@ class Trainer:
                     break
 
             except Exception as e:
-                print(f"Error occured {e}")
+                logger.error(f"Error occured {e}")
 
         return num_steps, rewards
 
@@ -178,14 +179,14 @@ class ICMTrainer:
 
 
                 except NoForecastAvailable as e:
-                    logging.info(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
+                    logger.info(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
                     self.env.set_id(episode_id)
                     obs = self.env.reset()
                     self.env.fast_forward_chronics(i-1)
                     continue
 
                 except Grid2OpException as e:
-                    logging.info(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
+                    logger.info(f"Grid2OpException encountered at step {i} in episode {episode_id}: {e}")
                     self.env.set_id(episode_id)
                     obs = self.env.reset()
                     self.env.fast_forward_chronics(i-1)
@@ -199,3 +200,5 @@ class ICMTrainer:
                     print(f"Agent survived {num_steps}/{self.env.max_episode_duration()} steps")
                     self.agent.save_model(model_name=f"actor_critic_{num_steps}")
                     self.best_survival_step = num_steps
+
+
