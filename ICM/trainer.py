@@ -24,10 +24,10 @@ class Trainer:
         self.update_freq = self.config["update_freq"]#.get("update_freq", 512)
         self.step_counter = 0
 
-    def train(self):
+    def train(self, t_episode):
         num_episodes = len(self.env.chronics_handler.subpaths)
 
-        for episode_id in range(num_episodes-100):
+        for episode_id in range(0, t_episode):
 
             logger.info(f"Episode ID : {episode_id}")
             self.env.set_id(episode_id)
