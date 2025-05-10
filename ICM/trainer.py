@@ -4,6 +4,7 @@ from lightsim2grid import LightSimBackend
 from grid2op import Environment
 from ICM.converter import ActionConverter
 from ICM.actor_critic import ActorCritic
+from ICM.Utils.utils import save_episode_rewards
 from ICM.icm import ICM
 import torch.optim as optim
 from grid2op.Exceptions import *
@@ -23,16 +24,19 @@ class Trainer:
         self.best_survival_step = 0
         self.update_freq = self.config["update_freq"]#.get("update_freq", 512)
         self.step_counter = 0
+        self.episode_rewards = []
 
-    def train(self, t_episode):
+    def train(self, s_epi, t_epi):
         num_episodes = len(self.env.chronics_handler.subpaths)
 
-        for episode_id in range(0, t_episode):
+        for episode_id in range(s_epi, t_epi):
 
             logger.info(f"Episode ID : {episode_id}")
             self.env.set_id(episode_id)
             obs = self.env.reset()
             done = False
+            episode_total_reward = 0
+
 
             for i in tqdm(range(self.env.max_episode_duration()), desc=f"Episode {episode_id}", leave=True):
                 
@@ -40,6 +44,7 @@ class Trainer:
                     action = self.agent(obs.to_vect()) 
                     obs_, reward, done, _ = self.env.step(self.converter.act(action))
                     self.agent.rewards.append(reward)
+                    episode_total_reward += reward
                     self.step_counter += 1
                     obs = obs_
 
@@ -56,7 +61,7 @@ class Trainer:
                         self.agent.rewards.append(reward)
 
                     if self.step_counter % self.update_freq == 0:
-                        logger.info(f"\###########################################\nupdating at {self.step_counter}.....")
+                        logger.info(f"\###########################################\nupdating at {i}.....")
                         self.optimizer.zero_grad()
                         loss = self.agent.calculateLoss()
                         loss.backward()
@@ -87,6 +92,14 @@ class Trainer:
                     self.agent.save_model(model_name=f"actor_critic_{num_steps}")
                     self.best_survival_step = num_steps
 
+            self.episode_rewards.append(episode_total_reward)
+            logger.info(f"episode reward stored")
+        self.agent.save_model(f"actor_critic_{t_epi}")
+        logger.info(f"last episode agent saved at {t_epi}")
+        save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward")
+
+            
+
 
 
     def evaluate(self):
@@ -108,7 +121,7 @@ class Trainer:
         done = False
 
         for i in tqdm(range(self.env.max_episode_duration()), desc=f"Episode {test_path}", leave=True):
-            num_steps += i
+            num_steps += 1
             try:
                 action = self.agent(obs.to_vect()) 
                 obs_, reward, done, _ = self.env.step(self.converter.act(action))
