@@ -41,7 +41,7 @@ class ActionConverter:
     def action_idx(self, action):
         return self.actions.index(action)
     
-    def one_hot_encode(tensor, num_classes):
+    def one_hot_encode(self, tensor, num_classes):
         """
         One-hot encode a tensor of indices.
         
