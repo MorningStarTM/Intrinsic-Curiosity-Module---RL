@@ -15,18 +15,63 @@ import inspect
 
 
 class Trainer:
-    def __init__(self, agent:ActorCritic, env:Environment, converter:ActionConverter, config):
+    def __init__(self, agent:ActorCritic, env:Environment, converter:ActionConverter, config, use_agent=None):
         self.agent = agent
         self.env = env
         self.config = config
         self.converter = converter
-        self.optimizer = optim.Adam(self.agent.parameters(), lr=self.config['lr'], betas=self.config['betas'])
+        self.optimizer = self.agent.optimizer#optim.Adam(self.agent.parameters(), lr=self.config['lr'], betas=self.config['betas'])
         self.best_survival_step = 0
         self.update_freq = self.config["update_freq"]#.get("update_freq", 512)
         self.step_counter = 0
         self.episode_rewards = []
 
-    def train(self, s_epi, t_epi):
+        if use_agent is not None:
+            self.agent.load_model(use_agent)
+
+    def train(self):
+        running_reward = 0
+        for i_episode in range(0, self.config['episodes']):
+            logger.info(f"Episode : {i_episode}")
+            obs = self.env.reset()
+            done = False
+            episode_total_reward = 0
+
+            for t in range(self.config['max_ep_len']):
+                action = self.agent(obs.to_vect())
+                obs_, reward, done, _ = self.env.step(self.converter.act(action))
+                self.agent.rewards.append(reward)
+                episode_total_reward += reward
+                obs = obs_
+
+                if done:
+                    break
+
+            logger.info(f"Episode {i_episode} reward: {episode_total_reward}")  
+            self.episode_rewards.append(episode_total_reward)  
+            # Updating the policy :
+            self.optimizer.zero_grad()
+            loss = self.agent.calculateLoss(self.config['gamma'])
+            loss.backward()
+            self.optimizer.step()        
+            self.agent.clearMemory()
+
+            # saving the model if episodes > 999 OR avg reward > 200 
+            if i_episode % 1000 == 0:
+                self.agent.save_checkpoint()    
+           
+            
+            if i_episode % 20 == 0:
+                running_reward = running_reward/20
+                logger.info('Episode {}\tlength: {}\treward: {}'.format(i_episode, t, episode_total_reward))
+                running_reward = 0
+
+        save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward", filename="actor_critic_reward.npy")
+        logger.info(f"reward saved at ICM\\episode_reward")
+
+
+
+    def train_ep(self, s_epi, t_epi):
         num_episodes = len(self.env.chronics_handler.subpaths)
 
         for episode_id in range(s_epi, t_epi):
@@ -64,6 +109,7 @@ class Trainer:
                         logger.info(f"\###########################################\nupdating at {i}.....")
                         self.optimizer.zero_grad()
                         loss = self.agent.calculateLoss()
+                        logger.info(f"Loss calculated : {loss}")
                         loss.backward()
                         self.optimizer.step()
                         self.agent.clearMemory()
@@ -89,14 +135,14 @@ class Trainer:
                 logger.info(f"\n################################\nNumber of steps agent survived is {num_steps}")
                 if self.best_survival_step < num_steps:
                     logger.info(f"Agent survived {num_steps}/{self.env.max_episode_duration()} steps")
-                    self.agent.save_model(model_name=f"actor_critic_{num_steps}")
+                    self.agent.save_model(model_name=f"actor_critic_{episode_id}_{num_steps}")
                     self.best_survival_step = num_steps
 
             self.episode_rewards.append(episode_total_reward)
             logger.info(f"episode reward stored")
-        self.agent.save_model(f"actor_critic_{t_epi}")
+        self.agent.save_model(f"actor_critic_episode_{t_epi}")
         logger.info(f"last episode agent saved at {t_epi}")
-        save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward")
+        save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward", filename="episode_rewards_361_421.npy")
 
             
 
@@ -145,7 +191,8 @@ class ICMTrainer:
         self.config = config
         self.converter = converter
         self.icm = ICM(self.config)
-        self.optimizer = optim.Adam(self.agent.parameters(), lr=self.config['lr'], betas=self.config['betas'])
+        self.actor_optimizer = optim.Adam(self.agent.parameters(), lr=self.config['lr'], betas=self.config['betas'])
+        self.icm_optimizer = self.icm.optimizer
         self.best_survival_step = 0
 
 
@@ -165,13 +212,14 @@ class ICMTrainer:
                 try:
                     action = self.agent(obs.to_vect()) 
                     obs_, env_reward, done, _ = self.env.step(self.converter.act(action))
+                    state_, pred_next_state, action_pred, action_ = self.icm(action, obs, obs_)
 
-                    state_, pred_next_state, action_pred, action_ = self.icm(self.converter.action_idx(action), obs, obs_)
-                    intrinsic_reward, Li, Lf = self.icm.calc_loss(state_=state_, pred_state=pred_next_state, action=self.converter.action_idx(action))
+                    intrinsic_reward = self.icm.calc_loss(state_=state_, pred_state=pred_next_state)
 
-                    self.icm.memory.remember(state_=state_, pred_state=pred_next_state, actions=self.converter.action_idx(action), pred_actions=action_pred)
+                    self.icm.memory.remember(state_=state_, pred_state=pred_next_state, actions=action, pred_actions=action_)
 
-                    self.agent.rewards.append(intrinsic_reward)
+                    total_reward = env_reward + intrinsic_reward * 0.001
+                    self.agent.rewards.append(total_reward)
 
                     obs = obs_
 
@@ -189,7 +237,22 @@ class ICMTrainer:
 
                     
                     if train_step == 1024:
-                        pass
+                        logger.info(f"\n\n###########################################\nupdating at {i}.....\n\n")
+                        self.actor_optimizer.zero_grad()
+                        self.icm_optimizer.zero_grad()
+
+                        icm_loss = self.icm.learn()
+                        policy_loss = self.agent.calculateLoss(self.config['gamma'])
+                        total_loss = icm_loss + policy_loss
+
+                        total_loss.backward()
+                        self.actor_optimizer.step()
+                        self.icm_optimizer.step()
+
+                        self.agent.clearMemory()
+                        self.icm.memory.clear_memory()
+                        train_step = 0
+
 
 
                 except NoForecastAvailable as e:
@@ -212,7 +275,7 @@ class ICMTrainer:
                 num_steps, rewards = self.evaluate()
                 if self.best_survival_step < num_steps:
                     print(f"Agent survived {num_steps}/{self.env.max_episode_duration()} steps")
-                    self.agent.save_model(model_name=f"actor_critic_{num_steps}")
+                    self.agent.save_checkpoint(model_name=f"icm_actor_critic_{num_steps}")
                     self.best_survival_step = num_steps
 
 
