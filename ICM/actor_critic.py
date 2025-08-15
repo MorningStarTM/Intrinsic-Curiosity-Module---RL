@@ -10,7 +10,7 @@ from grid2op.Reward import L2RPNSandBoxScore
 import gym
 import os
 from ICM.Utils.logger import logger
-
+import torch.optim as optim
 
 class ActorCritic(nn.Module):
     def __init__(self, config):
@@ -36,6 +36,7 @@ class ActorCritic(nn.Module):
         self.state_values = []
         self.rewards = []
 
+        self.optimizer = optim.Adam(self.parameters(), lr=self.config['lr'], betas=self.config['betas'])
         self.to(self.device)
 
 
@@ -86,14 +87,34 @@ class ActorCritic(nn.Module):
         del self.state_values[:]
         del self.rewards[:]
 
+    def save_checkpoint(self, filename="actor_critic_checkpoint.pth"):
+        """Save model + optimizer for exact training resumption."""
+        os.makedirs(self.config['save_path'], exist_ok=True)
+        checkpoint = {
+            'model_state_dict': self.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'config': self.config
+        }
+        save_path = os.path.join(self.config['save_path'], filename)
+        torch.save(checkpoint, save_path)
+        logger.info(f"[SAVE] Checkpoint saved to {save_path}")
 
-    def save_model(self, model_name="actor_critic"):
-        torch.save(self.state_dict(), os.path.join(self.config['save_path'], model_name))
-        logger.info(f"model saved at {os.path.join(self.config['save_path'])}")
-        
-    def load_model(self, model_name="actor_critic"):
-        self.load_state_dict(torch.load(os.path.join(self.config['save_path'], model_name)))
-        logger.info(f"Model loaded from {os.path.join(self.config['save_path'])}")
+
+    def load_checkpoint(self, filename="actor_critic_checkpoint.pth", load_optimizer=True):
+        """Load model + optimizer state."""
+        file_path = os.path.join(self.config['save_path'], filename)
+        if not os.path.exists(file_path):
+            logger.error(f"[LOAD] No checkpoint found at {file_path}")
+            return False
+
+        checkpoint = torch.load(file_path, map_location=self.device)
+        self.load_state_dict(checkpoint['model_state_dict'])
+        if load_optimizer and 'optimizer_state_dict' in checkpoint:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        logger.info(f"[LOAD] Checkpoint loaded from {file_path}")
+        return True
+    
+
 
         
 
