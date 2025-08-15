@@ -237,7 +237,7 @@ class ICMTrainer:
 
                     
                     if train_step == 1024:
-                        logger.info(f"\n\n###########################################\nupdating at {i}.....\n\n")
+                        logger.info(f"\n\n###########################################\n Updating at {i}.....\n\n#####################################################")
                         self.actor_optimizer.zero_grad()
                         self.icm_optimizer.zero_grad()
 
@@ -272,7 +272,8 @@ class ICMTrainer:
 
             if episode_id!=0 and episode_id % 5 == 0:
                 print(f"\n\n#############################################\n Saving the Agent \n\n#############################################\n\n")
-                self.agent.save_checkpoint(model_name=f"icm_actor_critic_{episode_id}")
+                self.agent.save_checkpoint(filename=f"icm_actor_critic_{episode_id}.pt")
+                self.icm.save_checkpoint(filename=f"icm_{episode_id}.pt")
                 
 
 
