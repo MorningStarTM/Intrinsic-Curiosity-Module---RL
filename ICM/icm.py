@@ -5,11 +5,15 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
 from ICM.memory import Memory
+from ICM.Utils.logger import logger
+
+
 
 class ICM(nn.Module):
     def __init__(self, config) -> None:
         super(ICM, self).__init__()
         self.config = config
+        self.batch_size = self.config['batch_size']
 
         
         self.state = nn.Linear(self.config['input_dim'], 512)
@@ -40,7 +44,15 @@ class ICM(nn.Module):
         self.to(device=self.device)
         self.memory = Memory()
 
+    def _ensure_batch(self, x):
+        # state embedding might be [512]; make it [1,512] for concat
+        return x.unsqueeze(0) if x.dim() == 1 else x
+
+    
+    
     def forward(self, action, state, next_state):
+        state = torch.tensor(state.to_vect(), dtype=torch.float, device=self.device)
+        next_state = torch.tensor(next_state.to_vect(), dtype=torch.float, device=self.device)
         state = self.state(state)
         state_ = self.state_(next_state)
 
@@ -48,55 +60,93 @@ class ICM(nn.Module):
         action_probs = F.softmax(action_, dim=-1)
         action_distribution = Categorical(action_probs)
         action_pred = action_distribution.sample()
-
+        
+        action = torch.tensor(action, dtype=torch.long, device=self.device).unsqueeze(0)
         pred_next_state = self.forward_model(torch.cat([state, action], dim=-1))
 
         return state_, pred_next_state, action_pred, action_
     
 
-    def calc_loss(self, state_, pred_state, action, action_pred):
-        inverse_loss = nn.MSELoss()
-        Lf = inverse_loss(state_, pred_state)
-        Lf = self.config['beta'] * Lf
+    def calc_batch_loss(self, state_, pred_state, action_idx, action_logits):
 
-        forward_loss = nn.CrossEntropyLoss()
-        action_pred = action_pred.unsqueeze(0).float()
-        act = torch.tensor(action, dtype=torch.long, device=self.device).unsqueeze(0)
-        print(f"action pred : {action_pred.shape}")
-        print(f"action : {act.shape}")
-        Li = forward_loss(action_pred, act)
-        Li = (1-self.config['beta']) * Li
+        # add batch dim if single sample arrived
+        if state_.dim() == 1:       state_ = state_.unsqueeze(0)
+        if pred_state.dim() == 1:   pred_state = pred_state.unsqueeze(0)
+        if action_logits.dim() == 1: action_logits = action_logits.unsqueeze(0)
 
-        intrinsic_reward = self.config['alpha'] * ((state_ - pred_state).pow(2)).mean(dim=0)
-        return intrinsic_reward, Li, Lf
+        # ---- forward loss in feature space
+        Lf = self.config['beta'] * F.mse_loss(pred_state, state_, reduction='mean')
+
+        # ---- inverse loss (logits vs integer indices)  <-- NO unsqueeze, NO re-wrapping
+        if isinstance(action_idx, int):
+            action_idx = torch.tensor([action_idx], device=self.device, dtype=torch.long)
+        else:
+            action_idx = action_idx.to(self.device).long().view(-1)
+
+        Li = (1.0 - self.config['beta']) * F.cross_entropy(action_logits, action_idx, reduction='mean')
+
+        # ---- intrinsic reward (no grad), vector per sample
+
+        return Li, Lf
+
+
+    def calc_loss(self, state_, pred_state, action=None, action_pred=None):
+
+        with torch.no_grad():
+            intrinsic_reward = self.config['alpha'] * ((state_ - pred_state).pow(2)).mean(dim=0)
+        return intrinsic_reward #Li, Lf
     
 
+    def learn(self):
+        states_, pred_states, actions, actions_pred = self.memory.sample_memory()
 
-    def learn(self, state_, pred_state, action, action_pred, batch_size=32):
-        # Convert inputs to tensors
-        state_ = torch.tensor(state_, dtype=torch.float, device=self.device)
-        pred_state = torch.tensor(pred_state, dtype=torch.float, device=self.device)
-        action = torch.tensor(action, dtype=torch.long, device=self.device)
-        action_pred = torch.tensor(action_pred, dtype=torch.float, device=self.device)
+        states_ = torch.squeeze(torch.stack(states_, dim=0)).to(self.device)
+        pred_states = torch.squeeze(torch.stack(pred_states, dim=0)).to(self.device)
+        actions = torch.as_tensor(actions, dtype=torch.long, device=self.device).view(-1)
+        actions_pred = torch.squeeze(torch.stack(actions_pred, dim=0)).to(self.device)
+
+        # one shot loss & backward (no loops)
+        Li, Lf = self.calc_batch_loss(states_, pred_states, actions, actions_pred)
+        loss = Li + Lf
+
+        #self.optimizer.zero_grad()
+        #loss.backward()
+        #self.optimizer.step()
+
+        #logger.info(f"Average Loss: {float(loss.item()):.3f}")
+        return loss
+
+
+    def train(self):
+        states_, pred_states, actions, actions_pred = self.memory.sample_memory()
+
+        states_ = torch.squeeze(torch.stack(states_, dim=0)).to(self.device)
+        pred_states = torch.squeeze(torch.stack(pred_states, dim=0)).to(self.device)
+        #actions = torch.squeeze(torch.stack(actions, dim=0)).float().detach().to(self.device)
+        actions = torch.stack([torch.tensor(a, dtype=torch.long) for a in actions], dim=0)
+        actions_pred = torch.squeeze(torch.stack(actions_pred, dim=0)).to(self.device)
+
+        logger.info(f"states : {states_.shape}, pred_states : {pred_states.shape}, actions : {actions.shape}, actions_pred : {actions_pred.shape}")
 
         # Initialize total loss
         total_loss = 0.0
 
         # Process data in batches
-        num_records = state_.shape[0]
-        for start_idx in range(0, num_records, batch_size):
+        num_records = states_.shape[0]
+        for start_idx in range(0, num_records, self.config['batch_size']):
             # Define batch indices
-            end_idx = start_idx + batch_size
-            state_batch = state_[start_idx:end_idx]
-            pred_state_batch = pred_state[start_idx:end_idx]
-            action_batch = action[start_idx:end_idx]
-            action_pred_batch = action_pred[start_idx:end_idx]
+            end_idx = start_idx + self.config['batch_size']
+            state_batch = states_[start_idx:end_idx]
+            pred_state_batch = pred_states[start_idx:end_idx]
+            action_batch = actions[start_idx:end_idx]
+            action_pred_batch = actions_pred[start_idx:end_idx]
 
             # Compute loss for the batch
-            intrinsic_reward, Li, Lf = self.calc_loss(
+            intrinsic_reward, Li, Lf = self.calc_batch_loss(
                 state_batch, pred_state_batch, action_batch, action_pred_batch
             )
             batch_loss = Li + Lf
+            print(Li, Lf)
 
             # Backpropagation and optimizer step
             self.optimizer.zero_grad()
@@ -107,11 +157,28 @@ class ICM(nn.Module):
             total_loss += batch_loss.item()
 
         # Print average loss for the epoch
-        avg_loss = total_loss / (num_records / batch_size)
-        print(f"Average Loss: {avg_loss:.3f}")
+        avg_loss = total_loss / (num_records / self.config['batch_size'])
+        logger.info(f"Average Loss: {avg_loss:.3f}")
 
 
+    def save_checkpoint(self, filename="icm_checkpoint.pth"):
+        checkpoint = {
+            'model_state_dict': self.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'config': self.config
+        }
+        torch.save(checkpoint, filename)
+        logger.info(f"ICM model saved to {filename}")
 
+    def load_checkpoint(self, filename="icm_checkpoint.pth"):
+        if os.path.exists(filename):
+            checkpoint = torch.load(filename, map_location=self.device)
+            self.load_state_dict(checkpoint['model_state_dict'])
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            self.config = checkpoint['config']
+            logger.info(f"ICM model loaded from {filename}")
+        else:
+            logger.error(f"Checkpoint file {filename} does not exist.")
 
 
 
