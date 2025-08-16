@@ -106,7 +106,7 @@ class Trainer:
                         self.agent.rewards.append(reward)
 
                     if self.step_counter % self.update_freq == 0:
-                        logger.info(f"\###########################################\nupdating at {i}.....")
+                        logger.info(f"\###########################################\n updating at {i}.....")
                         self.optimizer.zero_grad()
                         loss = self.agent.calculateLoss()
                         logger.info(f"Loss calculated : {loss}")
@@ -130,9 +130,9 @@ class Trainer:
 
 
             if episode_id!=0 and episode_id % 5 == 0:
-                logger.info(f"\n\n#############################################\n\nEvaluating the Agent\n\n#############################################\n\n")
+                logger.info(f"\n\n#############################################\n\n Evaluating the Agent\n\n#############################################\n\n")
                 num_steps, rewards = self.evaluate()
-                logger.info(f"\n################################\nNumber of steps agent survived is {num_steps}")
+                logger.info(f"\n################################\n Number of steps agent survived is {num_steps}")
                 if self.best_survival_step < num_steps:
                     logger.info(f"Agent survived {num_steps}/{self.env.max_episode_duration()} steps")
                     self.agent.save_model(model_name=f"actor_critic_{episode_id}_{num_steps}")
@@ -185,12 +185,12 @@ class Trainer:
 
 
 class ICMTrainer:
-    def __init__(self, agent:ActorCritic, env:Environment, converter:ActionConverter, config) -> None:
+    def __init__(self, agent:ActorCritic, icm:ICM, env:Environment, converter:ActionConverter, config) -> None:
         self.agent = agent
         self.env = env
         self.config = config
         self.converter = converter
-        self.icm = ICM(self.config)
+        self.icm = icm
         self.actor_optimizer = optim.Adam(self.agent.parameters(), lr=self.config['lr'], betas=self.config['betas'])
         self.icm_optimizer = self.icm.optimizer
         self.best_survival_step = 0
