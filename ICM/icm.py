@@ -162,23 +162,27 @@ class ICM(nn.Module):
 
 
     def save_checkpoint(self, filename="icm_checkpoint.pth"):
+        os.makedirs(self.config['save_path'], exist_ok=True)
         checkpoint = {
             'model_state_dict': self.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'config': self.config
         }
-        torch.save(checkpoint, filename)
-        logger.info(f"ICM model saved to {filename}")
+        save_path = os.path.join(self.config['save_path'], filename)
+        torch.save(checkpoint, save_path)
+        logger.info(f"ICM model saved to {save_path}")
 
     def load_checkpoint(self, filename="icm_checkpoint.pth"):
-        if os.path.exists(filename):
-            checkpoint = torch.load(filename, map_location=self.device)
-            self.load_state_dict(checkpoint['model_state_dict'])
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            self.config = checkpoint['config']
-            logger.info(f"ICM model loaded from {filename}")
-        else:
-            logger.error(f"Checkpoint file {filename} does not exist.")
+        file_path = os.path.join(self.config['save_path'], filename)
+        if not os.path.exists(file_path):
+            logger.error(f"[LOAD] No checkpoint found at {file_path}")
+            return False
+        
+        checkpoint = torch.load(file_path, map_location=self.device)
+        self.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.config = checkpoint['config']
+        logger.info(f"ICM model loaded from {filename}")
 
 
 
