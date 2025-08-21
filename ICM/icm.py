@@ -172,8 +172,11 @@ class ICM(nn.Module):
         torch.save(checkpoint, save_path)
         logger.info(f"ICM model saved to {save_path}")
 
-    def load_checkpoint(self, filename="icm_checkpoint.pth"):
-        file_path = os.path.join(self.config['save_path'], filename)
+    def load_checkpoint(self, folder_name=None, filename="icm_checkpoint.pth"):
+        if folder_name is not None:
+            file_path = os.path.join(folder_name, filename)
+        else:
+            file_path = os.path.join(self.config['save_path'], filename)
         if not os.path.exists(file_path):
             logger.error(f"[LOAD] No checkpoint found at {file_path}")
             return False
