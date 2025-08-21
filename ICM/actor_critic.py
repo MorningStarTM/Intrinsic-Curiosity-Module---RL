@@ -100,9 +100,12 @@ class ActorCritic(nn.Module):
         logger.info(f"[SAVE] Checkpoint saved to {save_path}")
 
 
-    def load_checkpoint(self, filename="actor_critic_checkpoint.pth", load_optimizer=True):
+    def load_checkpoint(self, folder_name=None, filename="actor_critic_checkpoint.pth", load_optimizer=True):
         """Load model + optimizer state."""
-        file_path = os.path.join(self.config['save_path'], filename)
+        if folder_name is not None:
+            file_path = os.path.join(folder_name, filename)
+        else:
+            file_path = os.path.join(self.config['save_path'], filename)
         if not os.path.exists(file_path):
             logger.error(f"[LOAD] No checkpoint found at {file_path}")
             return False
