@@ -194,6 +194,65 @@ class ICMTrainer:
         self.actor_optimizer = optim.Adam(self.agent.parameters(), lr=self.config['lr'], betas=self.config['betas'])
         self.icm_optimizer = self.icm.optimizer
         self.best_survival_step = 0
+        self.episode_rewards = []
+
+
+    def fit(self):
+        running_reward = 0
+        for i_episode in range(0, self.config['episodes']):
+            logger.info(f"Episode : {i_episode}")
+            obs = self.env.reset()
+            done = False
+            episode_total_reward = 0
+
+            for t in range(self.config['max_ep_len']):
+                action = self.agent(obs.to_vect())
+                obs_, env_reward, done, _ = self.env.step(self.converter.act(action))
+                state_, pred_next_state, action_pred, action_ = self.icm(action, obs, obs_)
+
+                intrinsic_reward = self.icm.calc_loss(state_=state_, pred_state=pred_next_state)
+
+                self.icm.memory.remember(state_=state_, pred_state=pred_next_state, actions=action, pred_actions=action_)
+
+                total_reward = env_reward + intrinsic_reward * self.config['intrinsic_reward_weight']
+                self.agent.rewards.append(total_reward)
+                episode_total_reward += total_reward
+
+                obs = obs_
+
+                if done:
+                    break
+
+            
+            logger.info(f"Episode {i_episode} reward: {episode_total_reward}")  
+            self.episode_rewards.append(episode_total_reward)  
+            # Updating the policy :
+            self.actor_optimizer.zero_grad()
+            self.icm_optimizer.zero_grad()
+
+            icm_loss = self.icm.learn()
+            policy_loss = self.agent.calculateLoss(self.config['gamma'])
+            total_loss = icm_loss + policy_loss
+
+            total_loss.backward()
+            self.actor_optimizer.step() 
+            self.icm_optimizer.step()
+
+            self.agent.clearMemory()
+            self.icm.memory.clear_memory()
+
+            # saving the model if episodes > 999 OR avg reward > 200 
+            if i_episode % 1000 == 0:
+                self.agent.save_checkpoint()    
+           
+            
+            if i_episode % 20 == 0:
+                running_reward = running_reward/20
+                logger.info('Episode {}\tlength: {}\treward: {}'.format(i_episode, t, episode_total_reward))
+                running_reward = 0
+
+        save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward", filename="actor_critic_reward.npy")
+        logger.info(f"reward saved at ICM\\episode_reward")
 
 
 
