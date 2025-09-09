@@ -1,5 +1,6 @@
 from ICM.actor_critic import ActorCritic
 from ICM.converter import ActionConverter
+from ICM.icm import ICM 
 from ICM.trainer import  Trainer, ICMTrainer
 import grid2op
 from lightsim2grid import LightSimBackend
@@ -8,6 +9,7 @@ import warnings
 from grid2op.Chronics import FromHandlers
 from grid2op.Chronics.handlers import PerfectForecastHandler, CSVHandler
 from ICM.custom_reward import LossReward, MarginReward
+import argparse
 
 
 env = grid2op.make("l2rpn_case14_sandbox", 
@@ -30,11 +32,81 @@ config = {
     'icm_lr':1e-4,
     'beta':1e-4,
     'alpha':1e-4,
-    'batch_size':256
+    'batch_size':256,
+    'intrinsic_reward_weight':1,
 }
 
-agent = ActorCritic(config=config)
-trainer = ICMTrainer(agent=agent, env=env, converter=converter, config=config)
-#trainer = Trainer(agent=agent, env=env, converter=converter, config=config)
 
-trainer.train()
+
+def actor_critic_train():
+    agent = ActorCritic(config=config)
+    trainer = Trainer(agent=agent, env=env, converter=converter, config=config)
+    trainer.train()
+
+
+def icm_actor_critic_train(icm_file="icm_230.pt", ac_file="icm_actor_critic_230.pt", type='fit', start=None, end=None):
+    agent = ActorCritic(config=config)
+    agent.load_checkpoint(folder_name="ICM\\models", filename=ac_file)
+    icm = ICM(config=config)
+    icm.load_checkpoint(folder_name="ICM\\models", filename=icm_file)
+    trainer = ICMTrainer(agent=agent, icm=icm, env=env, converter=converter, config=config)
+    if type == 'fit':
+        trainer.fit()
+    else:
+        trainer.train(start=start, end=end)
+
+def icm_actor_critic_train_from_scratch(type='fit', start=None, end=None):
+    agent = ActorCritic(config=config)
+    
+    icm = ICM(config=config)
+    
+    trainer = ICMTrainer(agent=agent, icm=icm, env=env, converter=converter, config=config)
+    if type == 'fit':
+        trainer.fit()
+    else:
+        trainer.train(start=start, end=end)
+
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run training")
+    subparsers = parser.add_subparsers(dest="mode", required=True)
+
+    # Actor-Critic
+    ac_parser = subparsers.add_parser("actor_critic")
+
+    # ICM + Actor-Critic
+    icm_parser = subparsers.add_parser("icm")
+    icm_parser.add_argument("--icm_file", default="icm_230.pt")
+    icm_parser.add_argument("--ac_file", default="icm_actor_critic_230.pt")
+    icm_parser.add_argument("--type", choices=["fit", "train"], default="fit")
+    icm_parser.add_argument("--start", type=int, default=None)
+    icm_parser.add_argument("--end", type=int, default=None)
+
+    icm_ac_parser = subparsers.add_parser("icm_ac_scratch")
+    icm_ac_parser.add_argument("--type", choices=["fit", "train"], default="fit")
+    icm_ac_parser.add_argument("--start", type=int, default=None)
+    icm_ac_parser.add_argument("--end", type=int, default=None)
+
+
+    args = parser.parse_args()
+
+    if args.mode == "actor_critic":
+        actor_critic_train()
+    elif args.mode == "icm":
+        icm_actor_critic_train(
+            icm_file=args.icm_file,
+            ac_file=args.ac_file,
+            type=args.type,
+            start=args.start,
+            end=args.end,
+        )
+    elif args.mode == "icm_ac_scratch":
+        icm_actor_critic_train_from_scratch(
+            type=args.type,
+            start=args.start,
+            end=args.end,
+        )
+
+if __name__ == "__main__":
+    main()
