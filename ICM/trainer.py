@@ -213,8 +213,16 @@ class ICMTrainer:
             for t in range(self.config['max_ep_len']):
                 action = self.agent(obs.to_vect())
                 obs_, reward, done, _ = self.env.step(self.converter.act(action))
-                self.agent.rewards.append(reward)
-                episode_total_reward += reward
+                state_, pred_next_state, action_pred, action_ = self.icm(action, obs, obs_)
+
+                intrinsic_reward = self.icm.calc_loss(state_=state_, pred_state=pred_next_state)
+
+                self.icm.memory.remember(state_=state_, pred_state=pred_next_state, actions=action, pred_actions=action_)
+
+                total_reward = reward + intrinsic_reward * self.config['intrinsic_reward_weight']
+
+                self.agent.rewards.append(total_reward)
+                episode_total_reward += total_reward
                 obs = obs_
 
                 if done:
@@ -224,14 +232,24 @@ class ICMTrainer:
             self.episode_rewards.append(episode_total_reward)  
             # Updating the policy :
             self.actor_optimizer.zero_grad()
-            loss = self.agent.calculateLoss(self.config['gamma'])
-            loss.backward()
-            self.actor_optimizer.step()        
+            self.icm_optimizer.zero_grad()
+
+            icm_loss = self.icm.learn()
+            policy_loss = self.agent.calculateLoss(self.config['gamma'])
+            total_loss = policy_loss + icm_loss
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.agent.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(self.icm.parameters(), 1.0)
+            self.actor_optimizer.step()     
+            self.icm_optimizer.step()
+
             self.agent.clearMemory()
+            self.icm.memory.clear_memory()
 
             # saving the model if episodes > 999 OR avg reward > 200 
             if i_episode != 0 and i_episode % 1000 == 0:
                 self.agent.save_checkpoint(filename="final_actor_critic.pt")    
+                self.icm.save_checkpoint(filename="final_icm.pt")
            
             
             if i_episode % 20 == 0:
