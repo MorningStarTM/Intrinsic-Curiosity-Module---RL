@@ -11,6 +11,74 @@ import gym
 import os
 from ICM.Utils.logger import logger
 import torch.optim as optim
+from torch_geometric.nn import GATv2Conv, global_mean_pool
+
+
+class ActorCriticGAT(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        in_dim   = config['input_dim']      # 11
+        act_dim  = config['action_dim']     # size of your action catalog
+        edge_dim = 5  # 5 (rho, p, q, status, dir)
+        hid      = 256
+        heads    = 4
+        p_drop   = 0.0
+        attn_drop= 0.0
+
+        # Keep it shallow: 2 GATv2 layers
+        self.gat1 = GATv2Conv(
+            in_channels=in_dim,
+            out_channels=hid // heads,
+            heads=heads,
+            concat=True,               # -> [N, hid]
+            edge_dim=edge_dim,         # <— use edge_attr
+            dropout=attn_drop,
+            add_self_loops=False,      # we don't add self-loops here to avoid attr mismatch
+        )
+        self.gat2 = GATv2Conv(
+            in_channels=hid,
+            out_channels=hid,
+            heads=1,
+            concat=False,              # -> [N, hid]
+            edge_dim=edge_dim,
+            dropout=attn_drop,
+            add_self_loops=False,
+        )
+
+        self.act = nn.ReLU()
+        self.do  = nn.Dropout(p_drop)
+
+        # Graph-level heads (one action/value per grid)
+        self.policy = nn.Linear(hid, act_dim)
+        self.value  = nn.Linear(hid, 1)
+
+        self.to(self.device)
+        self.optimizer = optim.Adam(self.parameters(), lr=config['lr'], betas=config['betas'])
+
+        # (optional) rollout lists
+        self.logprobs, self.state_values, self.rewards = [], [], []
+
+    def forward(self, x, edge_index, batch, edge_attr):
+        h = self.gat1(x, edge_index, edge_attr); h = self.act(h); h = self.do(h)
+        h = self.gat2(h, edge_index, edge_attr); h = self.act(h)
+        g = global_mean_pool(h, batch)           # [B, hid]
+        logits = self.policy(g)                  # [B, action_dim]
+        value  = self.value(g).squeeze(-1)       # [B]
+        
+        action_probs = F.softmax(logits, dim=-1)
+        action_distribution = Categorical(action_probs)
+        action = action_distribution.sample()
+
+        self.logprobs.append(action_distribution.log_prob(action))
+        self.state_values.append(value)
+
+        return action.item()
+    
+
+
+
 
 class ActorCritic(nn.Module):
     def __init__(self, config):
