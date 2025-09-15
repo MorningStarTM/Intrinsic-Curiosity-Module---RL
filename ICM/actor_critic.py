@@ -77,6 +77,74 @@ class ActorCriticGAT(nn.Module):
         return action.item()
     
 
+    def calculateLoss(self, gamma=0.99):
+        if not (self.logprobs and self.state_values and self.rewards):
+            logger.error("Warning: Empty memory buffers!")
+            return torch.tensor(0.0, device=self.device)
+        
+
+        # calculating discounted rewards:
+        rewards = []
+        dis_reward = 0
+        for reward in self.rewards[::-1]:
+            dis_reward = reward + gamma * dis_reward
+            rewards.insert(0, dis_reward)
+                
+        # normalizing the rewards:
+       
+        rewards = torch.tensor(rewards).to(self.device)
+        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+        
+        loss = 0
+        for logprob, value, reward in zip(self.logprobs, self.state_values, rewards):
+            advantage = reward  - value.item()
+            action_loss = -logprob * advantage
+            value_loss = F.smooth_l1_loss(value, reward.unsqueeze(0))
+            loss += (action_loss + value_loss)   
+        return loss
+    
+    def clearMemory(self):
+        del self.logprobs[:]
+        del self.state_values[:]
+        del self.rewards[:]
+
+    def save_checkpoint(self, filename="graph_actor_critic_checkpoint.pth"):
+        """Save model + optimizer for exact training resumption."""
+        os.makedirs(self.config['save_path'], exist_ok=True)
+        checkpoint = {
+            'model_state_dict': self.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'config': self.config
+        }
+        save_path = os.path.join(self.config['save_path'], filename)
+        torch.save(checkpoint, save_path)
+        logger.info(f"[SAVE] Checkpoint saved to {save_path}")
+
+
+    def load_checkpoint(self, folder_name=None, filename="graph_actor_critic_checkpoint.pth", load_optimizer=True):
+        """Load model + optimizer state."""
+        if folder_name is not None:
+            file_path = os.path.join(folder_name, filename)
+        else:
+            file_path = os.path.join(self.config['save_path'], filename)
+        if not os.path.exists(file_path):
+            logger.error(f"[LOAD] No checkpoint found at {file_path}")
+            return False
+
+        checkpoint = torch.load(file_path, map_location=self.device)
+        self.load_state_dict(checkpoint['model_state_dict'])
+        if load_optimizer and 'optimizer_state_dict' in checkpoint:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        logger.info(f"[LOAD] Checkpoint loaded from {file_path}")
+        return True
+    
+
+
+        
+
+
+    
+
 
 
 
