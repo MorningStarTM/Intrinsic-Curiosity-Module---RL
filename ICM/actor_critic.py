@@ -18,60 +18,80 @@ class ActorCriticGAT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+        self.config = config
         in_dim   = config['input_dim']      # 11
         act_dim  = config['action_dim']     # size of your action catalog
         edge_dim = 5  # 5 (rho, p, q, status, dir)
-        hid      = 256
-        heads    = 4
         p_drop   = 0.0
         attn_drop= 0.0
 
-        # Keep it shallow: 2 GATv2 layers
-        self.gat1 = GATv2Conv(
-            in_channels=in_dim,
-            out_channels=hid // heads,
-            heads=heads,
-            concat=True,               # -> [N, hid]
-            edge_dim=edge_dim,         # <— use edge_attr
-            dropout=attn_drop,
-            add_self_loops=False,      # we don't add self-loops here to avoid attr mismatch
-        )
-        self.gat2 = GATv2Conv(
-            in_channels=hid,
-            out_channels=hid,
-            heads=1,
-            concat=False,              # -> [N, hid]
-            edge_dim=edge_dim,
-            dropout=attn_drop,
-            add_self_loops=False,
-        )
+        self.gat_s1 = GATv2Conv(
+            in_channels=in_dim, out_channels=16, heads=4, concat=True,
+            edge_dim=edge_dim, dropout=attn_drop, add_self_loops=False)   # 16*4 = 64
+        self.gat_s2 = GATv2Conv(
+            in_channels=64, out_channels=32, heads=4, concat=True,
+            edge_dim=edge_dim, dropout=attn_drop, add_self_loops=False)   # 32*4 = 128
+        self.gat_s3 = GATv2Conv(
+            in_channels=128, out_channels=256, heads=1, concat=False,
+            edge_dim=edge_dim, dropout=attn_drop, add_self_loops=False)   # 256
+
+        # ---- Policy head: graph layers 256 -> 512 -> 256 ---------------------
+        self.gat_p1 = GATv2Conv(
+            in_channels=256, out_channels=128, heads=4, concat=True,
+            edge_dim=edge_dim, dropout=attn_drop, add_self_loops=False)   # 128*4 = 512
+        self.gat_p2 = GATv2Conv(
+            in_channels=512, out_channels=256, heads=1, concat=False,
+            edge_dim=edge_dim, dropout=attn_drop, add_self_loops=False)   # 256
+        self.policy = nn.Linear(256, act_dim)
+
+        # ---- Value head: graph layers 256 -> 512 -> 256 ----------------------
+        self.gat_v1 = GATv2Conv(
+            in_channels=256, out_channels=128, heads=4, concat=True,
+            edge_dim=edge_dim, dropout=attn_drop, add_self_loops=False)   # 512
+        self.gat_v2 = GATv2Conv(
+            in_channels=512, out_channels=256, heads=1, concat=False,
+            edge_dim=edge_dim, dropout=attn_drop, add_self_loops=False)   # 256
+        self.value = nn.Linear(256, 1)
 
         self.act = nn.ReLU()
         self.do  = nn.Dropout(p_drop)
 
-        # Graph-level heads (one action/value per grid)
-        self.policy = nn.Linear(hid, act_dim)
-        self.value  = nn.Linear(hid, 1)
-
         self.to(self.device)
         self.optimizer = optim.Adam(self.parameters(), lr=config['lr'], betas=config['betas'])
 
-        # (optional) rollout lists
+        # rollout buffers
         self.logprobs, self.state_values, self.rewards = [], [], []
 
-    def forward(self, x, edge_index, batch, edge_attr):
-        h = self.gat1(x, edge_index, edge_attr); h = self.act(h); h = self.do(h)
-        h = self.gat2(h, edge_index, edge_attr); h = self.act(h)
-        g = global_mean_pool(h, batch)           # [B, hid]
-        logits = self.policy(g)                  # [B, action_dim]
-        value  = self.value(g).squeeze(-1)       # [B]
-        
-        action_probs = F.softmax(logits, dim=-1)
-        action_distribution = Categorical(action_probs)
-        action = action_distribution.sample()
+    def _clean(self, t):
+        t = torch.nan_to_num(t, nan=0.0, posinf=1e6, neginf=-1e6)
+        return torch.clamp(t, -1e6, 1e6)
 
-        self.logprobs.append(action_distribution.log_prob(action))
+
+    def forward(self, x, edge_index, batch, edge_attr):
+
+        # shared trunk
+        h = self.gat_s1(x, edge_index, edge_attr); h = self.act(h); h = self.do(h)   # 64
+        h = self.gat_s2(h, edge_index, edge_attr); h = self.act(h); h = self.do(h)   # 128
+        h = self.gat_s3(h, edge_index, edge_attr); h = self.act(h)                   # 256
+
+        # policy graph head
+        hp = self.gat_p1(h, edge_index, edge_attr); hp = self.act(hp); hp = self.do(hp)  # 512
+        hp = self.gat_p2(hp, edge_index, edge_attr); hp = self.act(hp)                   # 256
+        gp = global_mean_pool(hp, batch)                                                 # [B,256]
+        logits = self.policy(gp)                                            # [B,A]
+
+        # value graph head
+        hv = self.gat_v1(h, edge_index, edge_attr); hv = self.act(hv); hv = self.do(hv)  # 512
+        hv = self.gat_v2(hv, edge_index, edge_attr); hv = self.act(hv)                   # 256
+        gv = global_mean_pool(hv, batch)                                                 # [B,256]
+        value = self.value(gv).squeeze(-1)                                               # [B]
+
+        # keep the same action sampling style as your MLP trainer
+        probs = F.softmax(logits, dim=-1)            # you used probs there
+        dist  = Categorical(probs=probs)             # NOTE: pass as probs (not logits)
+        action = dist.sample()
+
+        self.logprobs.append(dist.log_prob(action))
         self.state_values.append(value)
 
         return action.item()
@@ -104,9 +124,9 @@ class ActorCriticGAT(nn.Module):
         return loss
     
     def clearMemory(self):
-        del self.logprobs[:]
-        del self.state_values[:]
-        del self.rewards[:]
+        self.logprobs.clear()
+        self.state_values.clear()
+        self.rewards.clear()
 
     def save_checkpoint(self, filename="graph_actor_critic_checkpoint.pth"):
         """Save model + optimizer for exact training resumption."""
