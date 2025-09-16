@@ -3,8 +3,9 @@ from grid2op.Reward import L2RPNSandBoxScore
 from lightsim2grid import LightSimBackend
 from grid2op import Environment
 from ICM.converter import ActionConverter
-from ICM.actor_critic import ActorCritic
+from ICM.actor_critic import ActorCritic, ActorCriticGAT
 from ICM.Utils.utils import save_episode_rewards
+from ICM.Utils.graph_builder import build_homogeneous_grid_graph, obs_to_pyg_data
 from ICM.icm import ICM
 import torch.optim as optim
 from grid2op.Exceptions import *
@@ -343,3 +344,60 @@ class ICMTrainer:
                 
 
 
+
+
+class GraphAgentTrainer:
+    def __init__(self, agent:ActorCriticGAT, env:Environment, converter:ActionConverter, config) -> None:
+        self.agent = agent
+        self.env = env
+        self.config = config
+        self.converter = converter
+        self.optimizer = self.agent.optimizer
+        self.best_survival_step = 0
+        self.episode_rewards = []
+
+    
+    
+    def train(self):
+        running_reward = 0
+        for i_episode in range(0, self.config['episodes']):
+            logger.info(f"Episode : {i_episode}")
+            obs = self.env.reset()
+            done = False
+            episode_total_reward = 0
+
+            for t in range(self.config['max_ep_len']):
+                data = build_homogeneous_grid_graph(obs, self.env, device=self.agent.device, danger_thresh=0.98)
+                batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.agent.device)
+
+                action = self.agent(data.x, data.edge_index, batch, data.edge_attr)
+                obs_, reward, done, _ = self.env.step(self.converter.act(action))
+                self.agent.rewards.append(reward)
+                episode_total_reward += reward
+                obs = obs_
+
+                if done:
+                    break
+
+            logger.info(f"Episode {i_episode} reward: {episode_total_reward}")  
+            self.episode_rewards.append(episode_total_reward)  
+            # Updating the policy :
+            self.optimizer.zero_grad()
+            loss = self.agent.calculateLoss(self.config['gamma'])
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.agent.parameters(), 1.0)
+            self.optimizer.step()        
+            self.agent.clearMemory()
+
+            # saving the model if episodes > 999 OR avg reward > 200 
+            if i_episode != 0 and i_episode % 1000 == 0:
+                self.agent.save_checkpoint(filename="gat_actor_critic.pt")    
+           
+            
+            if i_episode % 20 == 0:
+                running_reward = running_reward/20
+                logger.info('Episode {}\tlength: {}\treward: {}'.format(i_episode, t, episode_total_reward))
+                running_reward = 0
+
+        save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward", filename="actor_critic_gat_reward.npy")
+        logger.info(f"reward saved at ICM\\episode_reward")
