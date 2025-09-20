@@ -11,7 +11,8 @@ import gym
 import os
 from ICM.Utils.logger import logger
 import torch.optim as optim
-from torch_geometric.nn import GATv2Conv, global_mean_pool
+from torch_geometric.nn import GATv2Conv, global_mean_pool, global_add_pool
+from torch_geometric.utils import add_self_loops
 
 
 class ActorCriticGAT(nn.Module):
@@ -25,76 +26,45 @@ class ActorCriticGAT(nn.Module):
         p_drop   = 0.0
         attn_drop= 0.0
 
-        self.gat_s1 = GATv2Conv(
-            in_channels=in_dim, out_channels=16, heads=4, concat=True,
-            edge_dim=edge_dim, dropout=attn_drop, add_self_loops=False)   # 16*4 = 64
-        self.gat_s2 = GATv2Conv(
-            in_channels=64, out_channels=32, heads=4, concat=True,
-            edge_dim=edge_dim, dropout=attn_drop, add_self_loops=False)   # 32*4 = 128
-        self.gat_s3 = GATv2Conv(
-            in_channels=128, out_channels=256, heads=1, concat=False,
-            edge_dim=edge_dim, dropout=attn_drop, add_self_loops=False)   # 256
+        # shared trunk: 64 -> 128 -> 256
+        self.g1 = GATv2Conv(in_dim, 16, heads=4, concat=True,  add_self_loops=True)   # 64
+        self.g2 = GATv2Conv(64,     32, heads=4, concat=True,  add_self_loops=True)   # 128
+        self.g3 = GATv2Conv(128,   256, heads=1, concat=False, add_self_loops=True)   # 256
 
-        # ---- Policy head: graph layers 256 -> 512 -> 256 ---------------------
-        self.gat_p1 = GATv2Conv(
-            in_channels=256, out_channels=128, heads=4, concat=True,
-            edge_dim=edge_dim, dropout=attn_drop, add_self_loops=False)   # 128*4 = 512
-        self.gat_p2 = GATv2Conv(
-            in_channels=512, out_channels=256, heads=1, concat=False,
-            edge_dim=edge_dim, dropout=attn_drop, add_self_loops=False)   # 256
-        self.policy = nn.Linear(256, act_dim)
+        # policy head IS a graph layer: 256 -> act_dim (per node)
+        self.gp = GATv2Conv(256, act_dim, heads=1, concat=False, add_self_loops=True) # [N, A]
 
-        # ---- Value head: graph layers 256 -> 512 -> 256 ----------------------
-        self.gat_v1 = GATv2Conv(
-            in_channels=256, out_channels=128, heads=4, concat=True,
-            edge_dim=edge_dim, dropout=attn_drop, add_self_loops=False)   # 512
-        self.gat_v2 = GATv2Conv(
-            in_channels=512, out_channels=256, heads=1, concat=False,
-            edge_dim=edge_dim, dropout=attn_drop, add_self_loops=False)   # 256
-        self.value = nn.Linear(256, 1)
+        # value head IS a graph layer: 256 -> 1 (per node)
+        self.gv = GATv2Conv(256, 1, heads=1, concat=False, add_self_loops=True)       # [N, 1]
 
         self.act = nn.ReLU()
-        self.do  = nn.Dropout(p_drop)
-
         self.to(self.device)
         self.optimizer = optim.Adam(self.parameters(), lr=config['lr'], betas=config['betas'])
 
-        # rollout buffers
         self.logprobs, self.state_values, self.rewards = [], [], []
 
-    def _clean(self, t):
-        t = torch.nan_to_num(t, nan=0.0, posinf=1e6, neginf=-1e6)
-        return torch.clamp(t, -1e6, 1e6)
+    def forward(self, x, edge_index, batch, _edge_attr_ignored=None):
+        x = torch.nan_to_num(x, 0.0, 1e6, -1e6)
 
+        h = self.act(self.g1(x, edge_index))
+        h = self.act(self.g2(h, edge_index))
+        h = self.act(self.g3(h, edge_index))          # [N,256]
 
-    def forward(self, x, edge_index, batch, edge_attr):
+        # per-node action scores, then POOL to graph logits
+        pa = self.gp(h, edge_index)                   # [N, A]
+        va = self.gv(h, edge_index)                   # [N, 1]
 
-        # shared trunk
-        h = self.gat_s1(x, edge_index, edge_attr); h = self.act(h); h = self.do(h)   # 64
-        h = self.gat_s2(h, edge_index, edge_attr); h = self.act(h); h = self.do(h)   # 128
-        h = self.gat_s3(h, edge_index, edge_attr); h = self.act(h)                   # 256
+        logits = global_add_pool(pa, batch)           # [B, A]  (sum avoids NaN)
+        value  = global_add_pool(va, batch).squeeze(-1)  # [B]
 
-        # policy graph head
-        hp = self.gat_p1(h, edge_index, edge_attr); hp = self.act(hp); hp = self.do(hp)  # 512
-        hp = self.gat_p2(hp, edge_index, edge_attr); hp = self.act(hp)                   # 256
-        gp = global_mean_pool(hp, batch)                                                 # [B,256]
-        logits = self.policy(gp)                                            # [B,A]
-
-        # value graph head
-        hv = self.gat_v1(h, edge_index, edge_attr); hv = self.act(hv); hv = self.do(hv)  # 512
-        hv = self.gat_v2(hv, edge_index, edge_attr); hv = self.act(hv)                   # 256
-        gv = global_mean_pool(hv, batch)                                                 # [B,256]
-        value = self.value(gv).squeeze(-1)                                               # [B]
-
-        # keep the same action sampling style as your MLP trainer
-        probs = F.softmax(logits, dim=-1)            # you used probs there
-        dist  = Categorical(probs=probs)             # NOTE: pass as probs (not logits)
+        logits = torch.nan_to_num(logits, 0.0, 1e6, -1e6)
+        dist = Categorical(logits=logits)
         action = dist.sample()
 
-        self.logprobs.append(dist.log_prob(action))
-        self.state_values.append(value)
-
+        self.logprobs.append(dist.log_prob(action))   # [B] (B=1 in your loop)
+        self.state_values.append(value)               # [B]
         return action.item()
+
     
 
     def calculateLoss(self, gamma=0.99):
