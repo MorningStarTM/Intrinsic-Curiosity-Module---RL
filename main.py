@@ -1,7 +1,7 @@
-from ICM.actor_critic import ActorCritic
+from ICM.actor_critic import ActorCritic, ActorCriticGAT
 from ICM.converter import ActionConverter
 from ICM.icm import ICM 
-from ICM.trainer import  Trainer, ICMTrainer
+from ICM.trainer import  Trainer, ICMTrainer, GraphAgentTrainer
 import grid2op
 from lightsim2grid import LightSimBackend
 from grid2op.Reward import L2RPNSandBoxScore
@@ -37,10 +37,32 @@ config = {
 }
 
 
+graph_config = {
+    "input_dim":11,
+    "action_dim":converter.n,
+    "gamma": 0.99,
+    "lr": 0.0003,
+    "betas": (0.9, 0.999),
+    "update_freq": 512,
+    "save_path":"ICM\models",
+    'episodes': 10000,
+    'max_ep_len':10000,
+    'icm_lr':1e-4,
+    'beta':1e-4,
+    'alpha':1e-4,
+    'batch_size':256,
+    'intrinsic_reward_weight':1,
+}
+
 
 def actor_critic_train():
     agent = ActorCritic(config=config)
     trainer = Trainer(agent=agent, env=env, converter=converter, config=config)
+    trainer.train()
+
+def graph_actor_critic_train():
+    agent = ActorCriticGAT(config=graph_config)
+    trainer = GraphAgentTrainer(agent=agent, env=env, converter=converter, config=graph_config)
     trainer.train()
 
 
@@ -75,6 +97,9 @@ def main():
     # Actor-Critic
     ac_parser = subparsers.add_parser("actor_critic")
 
+    gac_parser = subparsers.add_parser("gat_actor_critic")
+    
+
     # ICM + Actor-Critic
     icm_parser = subparsers.add_parser("icm")
     icm_parser.add_argument("--icm_file", default="icm_230.pt")
@@ -93,6 +118,11 @@ def main():
 
     if args.mode == "actor_critic":
         actor_critic_train()
+
+    if args.mode == "gat_actor_critic":
+        graph_actor_critic_train()
+
+
     elif args.mode == "icm":
         icm_actor_critic_train(
             icm_file=args.icm_file,
