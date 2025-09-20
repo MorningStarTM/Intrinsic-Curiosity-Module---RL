@@ -14,7 +14,9 @@ from ICM.Utils.logger import logger
 import random
 import inspect
 import numpy as np
+import pandas as pd
 import torch
+import os
 
 
 class Trainer:
@@ -355,39 +357,77 @@ class GraphAgentTrainer:
         self.optimizer = self.agent.optimizer
         self.best_survival_step = 0
         self.episode_rewards = []
-
+        self.episode_lenths = []
+        self.episode_reasons  = []     
     
     
     def train(self):
         running_reward = 0
+        update_every = 128
         for i_episode in range(0, self.config['episodes']):
             logger.info(f"Episode : {i_episode}")
             obs = self.env.reset()
             done = False
             episode_total_reward = 0
+            
+            
+            scaler = torch.cuda.amp.GradScaler(enabled=True)
+            
 
             for t in range(self.config['max_ep_len']):
                 data = build_homogeneous_grid_graph(obs, self.env, device=self.agent.device, danger_thresh=0.98)
-                batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.agent.device)
+                if data.num_nodes == 0:
+                    # minimal 1-node fallback (keeps training alive)
+                    data.x = torch.zeros(1, self.agent.config['input_dim'], device=self.agent.device)
+                    data.edge_index = torch.empty(2, 0, dtype=torch.long, device=self.agent.device)
 
-                action = self.agent(data.x, data.edge_index, batch, data.edge_attr)
-                obs_, reward, done, _ = self.env.step(self.converter.act(action))
+                batch = getattr(data, "batch",
+                torch.zeros(data.num_nodes, dtype=torch.long, device=self.agent.device))
+
+                with torch.cuda.amp.autocast(enabled=True):
+                    action = self.agent(data.x, data.edge_index, batch)
+                obs_, reward, done, info = self.env.step(self.converter.act(action))
                 self.agent.rewards.append(reward)
                 episode_total_reward += reward
                 obs = obs_
+                
 
                 if done:
                     break
 
             logger.info(f"Episode {i_episode} reward: {episode_total_reward}")  
-            self.episode_rewards.append(episode_total_reward)  
+            self.episode_rewards.append(episode_total_reward) 
+            # tag why the episode ended (best-effort; keys depend on env)
+            reason = "done" if done else "max_ep_len"
+            # If the env provides richer signals, prefer them:
+            if isinstance(info, dict):
+                if info.get("is_illegal", False):
+                    reason = "illegal"
+                elif info.get("is_ambiguous", False):
+                    reason = "ambiguous"
+                elif info.get("is_blackout", False):
+                    reason = "blackout"
+                elif info.get("is_game_over", False):
+                    reason = "game_over"
+                elif info.get("is_last", False) or info.get("is_final_observation", False):
+                    reason = "end_of_chronic"
+            
+            self.episode_lenths.append(t+1)   
+            self.episode_reasons.append(reason)          
+
             # Updating the policy :
-            self.optimizer.zero_grad()
-            loss = self.agent.calculateLoss(self.config['gamma'])
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.agent.parameters(), 1.0)
-            self.optimizer.step()        
-            self.agent.clearMemory()
+            if (t+1) % update_every == 0 or done:
+                self.optimizer.zero_grad(set_to_none=True)
+                with torch.cuda.amp.autocast(enabled=True):
+                    loss = self.agent.calculateLoss(self.config['gamma'])
+                loss.backward()
+                #scaler.scale(loss).backward()
+                torch.nn.utils.clip_grad_norm_(self.agent.parameters(), 1.0)
+                self.optimizer.step()        
+                #scaler.step(self.optimizer)
+                #scaler.update()
+                self.agent.clearMemory()
+                if torch.cuda.is_available(): torch.cuda.empty_cache()
 
             # saving the model if episodes > 999 OR avg reward > 200 
             if i_episode != 0 and i_episode % 1000 == 0:
@@ -400,4 +440,19 @@ class GraphAgentTrainer:
                 running_reward = 0
 
         save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward", filename="actor_critic_gat_reward.npy")
+        np.save(os.path.join("ICM", "episode_reward", "actor_critic_gat_lengths.npy"), np.array(self.episode_lenths, dtype=np.int32))
+
+        df = pd.DataFrame({
+            "episode": list(range(len(self.episode_rewards))),
+            "reward": self.episode_rewards,
+            "length": self.episode_lenths,
+            "reason": self.episode_reasons
+        })
+
+        csv_path = os.path.join("ICM\\episode_reward", "actor_critic_gat_stats.csv")
+        df.to_csv(csv_path, index=False)
+
+
         logger.info(f"reward saved at ICM\\episode_reward")
+        logger.info(f"Saved training stats to {csv_path}")
+    
