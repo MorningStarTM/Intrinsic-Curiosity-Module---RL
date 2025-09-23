@@ -363,7 +363,7 @@ class GraphAgentTrainer:
     
     def train(self):
         running_reward = 0
-        update_every = 128
+        update_every = self.config["update_freq"]
         for i_episode in range(0, self.config['episodes']):
             logger.info(f"Episode : {i_episode}")
             obs = self.env.reset()
