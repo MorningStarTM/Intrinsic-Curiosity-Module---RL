@@ -45,6 +45,7 @@ graph_config = {
     "betas": (0.9, 0.999),
     "update_freq": 512,
     "save_path":"ICM\models",
+    "episode_path":"ICM\episode_length",
     'episodes': 10000,
     'max_ep_len':10000,
     'icm_lr':1e-4,
