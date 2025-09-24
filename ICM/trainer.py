@@ -358,7 +358,10 @@ class GraphAgentTrainer:
         self.best_survival_step = 0
         self.episode_rewards = []
         self.episode_lenths = []
-        self.episode_reasons  = []     
+        self.episode_reasons  = []   
+        self.episode_path = self.config['episode_path']
+        os.makedirs(self.episode_path, exist_ok=True)
+        logger.info(f"Episode path : {self.episode_path}")  
     
     
     def train(self):
@@ -440,7 +443,7 @@ class GraphAgentTrainer:
                 running_reward = 0
 
         save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward", filename="actor_critic_gat_reward.npy")
-        np.save(os.path.join("ICM", "episode_reward", "actor_critic_gat_lengths.npy"), np.array(self.episode_lenths, dtype=np.int32))
+        np.save(os.path.join(self.episode_path, "actor_critic_gat_lengths.npy"), np.array(self.episode_lenths, dtype=np.int32))
 
         df = pd.DataFrame({
             "episode": list(range(len(self.episode_rewards))),
@@ -449,8 +452,9 @@ class GraphAgentTrainer:
             "reason": self.episode_reasons
         })
 
-        csv_path = os.path.join("ICM\\episode_reward", "actor_critic_gat_stats.csv")
+        csv_path = os.path.join(self.episode_path, "actor_critic_gat_stats.csv")
         df.to_csv(csv_path, index=False)
+        logger.info(f"episode stats saved at {self.episode_path}")
 
 
         logger.info(f"reward saved at ICM\\episode_reward")
