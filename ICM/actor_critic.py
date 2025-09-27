@@ -27,9 +27,9 @@ class ActorCriticGAT(nn.Module):
         attn_drop= 0.0
 
         # shared trunk: 64 -> 128 -> 256
-        self.g1 = GATv2Conv(in_dim, 16, heads=4, concat=True,  add_self_loops=True)   # 64
-        self.g2 = GATv2Conv(64,     32, heads=4, concat=True,  add_self_loops=True)   # 128
-        self.g3 = GATv2Conv(128,   256, heads=1, concat=False, add_self_loops=True)   # 256
+        self.g1 = GATv2Conv(in_dim, 32, heads=4, concat=True,  add_self_loops=True)   # 64
+        self.g2 = GATv2Conv(64, 32, heads=4, concat=True,  add_self_loops=True)   # 128
+        self.g3 = GATv2Conv(128, 256, heads=1, concat=False, add_self_loops=True)   # 256
 
         # policy head IS a graph layer: 256 -> act_dim (per node)
         self.gp = GATv2Conv(256, act_dim, heads=1, concat=False, add_self_loops=True) # [N, A]
