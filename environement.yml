@@ -1,0 +1,36 @@
+name: ICM
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.10.13
+  - pytorch=2.0.1
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - pandapower
+  - tqdm
+  - tensorboard
+  - ipykernel
+  - pip
+  - imageio
+  - numba
+  - suitesparse
+  - pybind11
+  - ipywidgets
+  - optuna
+  - plotly
+  - nbformat
+  - python-kaleido
+  - scienceplots
+  - black
+  - pip:
+    - grid2op=1.10.5
+    - l2rpn_baselines
+    - lightsim2grid==0.7.5
+    - attr
+    - scikit-network=0.32.1
+    - torch_geometric=2.5.2
+    - pandapower=2.13.1
+    - loguru
