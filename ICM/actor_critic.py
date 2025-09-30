@@ -7,7 +7,6 @@ import grid2op
 from ICM.converter import ActionConverter
 from lightsim2grid import LightSimBackend
 from grid2op.Reward import L2RPNSandBoxScore
-import gym
 import os
 from ICM.Utils.logger import logger
 import torch.optim as optim
