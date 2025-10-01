@@ -16,3 +16,19 @@ conda env create -f environment.yml
 conda activate ICM
 ```
 
+## Scripts for Train
+### MLP based Actor Critic
+```bash
+python main.py actor_critic
+```
+
+### GAT based Actor Critic
+```bash
+python main.py gat_actor_critic
+
+```
+
+### ICM
+```bash
+python main.py icm
+```
