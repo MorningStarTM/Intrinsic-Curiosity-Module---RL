@@ -1,14 +1,10 @@
 name: l2rpn
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
   - defaults
 channel_priority: strict
 dependencies:
   - python=3.10
-  - pytorch=2.0.1
-  - pytorch-cuda=11.7
   - numpy
   - pandas
   - scipy
