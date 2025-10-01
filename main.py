@@ -13,9 +13,9 @@ import argparse
 
 
 env = grid2op.make("l2rpn_case14_sandbox", 
-                reward_class=L2RPNSandBoxScore,
+                #reward_class=L2RPNSandBoxScore,
                 backend=LightSimBackend(),
-                other_rewards={"loss": LossReward, "margin": MarginReward}
+                #other_rewards={"loss": LossReward, "margin": MarginReward}
                    )
 converter = ActionConverter(env=env)
 
