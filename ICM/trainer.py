@@ -380,6 +380,7 @@ class GraphAgentTrainer:
             for t in range(self.config['max_ep_len']):
                 data = build_homogeneous_grid_graph(obs, self.env, device=self.agent.device, danger_thresh=0.98)
                 if data.num_nodes == 0:
+                    logger.warning("Graph has no nodes")
                     # minimal 1-node fallback (keeps training alive)
                     data.x = torch.zeros(1, self.agent.config['input_dim'], device=self.agent.device)
                     data.edge_index = torch.empty(2, 0, dtype=torch.long, device=self.agent.device)
@@ -387,8 +388,8 @@ class GraphAgentTrainer:
                 batch = getattr(data, "batch",
                 torch.zeros(data.num_nodes, dtype=torch.long, device=self.agent.device))
 
-                with torch.cuda.amp.autocast(enabled=True):
-                    action = self.agent(data.x, data.edge_index, batch)
+                #with torch.cuda.amp.autocast(enabled=True):
+                action = self.agent(data.x, data.edge_index, batch)
                 obs_, reward, done, info = self.env.step(self.converter.act(action))
                 self.agent.rewards.append(reward)
                 episode_total_reward += reward
@@ -421,8 +422,8 @@ class GraphAgentTrainer:
             # Updating the policy :
             if (t+1) % update_every == 0 or done:
                 self.optimizer.zero_grad(set_to_none=True)
-                with torch.cuda.amp.autocast(enabled=True):
-                    loss = self.agent.calculateLoss(self.config['gamma'])
+                #with torch.cuda.amp.autocast(enabled=True):
+                loss = self.agent.calculateLoss(self.config['gamma'])
                 loss.backward()
                 #scaler.scale(loss).backward()
                 torch.nn.utils.clip_grad_norm_(self.agent.parameters(), 1.0)
