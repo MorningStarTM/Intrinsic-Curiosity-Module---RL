@@ -30,6 +30,7 @@ class Trainer:
         self.update_freq = self.config["update_freq"]#.get("update_freq", 512)
         self.step_counter = 0
         self.episode_rewards = []
+        self.episode_steps = []  
 
         if use_agent is not None:
             self.agent.load_model(use_agent)
@@ -70,9 +71,15 @@ class Trainer:
                 running_reward = running_reward/20
                 logger.info('Episode {}\tlength: {}\treward: {}'.format(i_episode, t, episode_total_reward))
                 running_reward = 0
+            
+            survival_steps = t + 1          # because t is 0-indexed
+            self.episode_steps.append(survival_steps)
 
         save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward", filename="actor_critic_reward.npy")
         logger.info(f"reward saved at ICM\\episode_reward")
+        os.makedirs("ICM\\episode_reward", exist_ok=True)
+        np.save("ICM\\episode_reward\\actor_critic_steps.npy", np.array(self.episode_steps, dtype=int))
+
 
 
 
