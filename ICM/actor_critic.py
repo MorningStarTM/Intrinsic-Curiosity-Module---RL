@@ -130,63 +130,72 @@ class ActorCriticGAT(nn.Module):
 
 
         
-
-
-    
+   
 
 
 
 
 class ActorCritic(nn.Module):
     def __init__(self, config):
-        super(ActorCritic, self).__init__()
+        super().__init__()
         self.config = config
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        input_dim = self.config['input_dim']
-
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, 512),
+        self.affine = nn.Sequential(
+            nn.Linear(self.config['input_dim'], 512), nn.ReLU(),
+            nn.Linear(512, 1024), nn.ReLU(),
+            nn.Linear(1024, 512), nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.LayerNorm(256),                 # ← normalize hidden to tame scales
             nn.ReLU(),
-            nn.Linear(512, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, 512),
-            nn.ReLU(),
-            nn.Linear(512, 256)
         )
+        self.action_layer = nn.Linear(256, self.config['action_dim'])
+        self.value_layer  = nn.Linear(256, 1)
 
-        self.policy = nn.Linear(256, self.config['action_dim'])
-        self.value = nn.Linear(256, 1)
+        self.logprobs, self.state_values, self.rewards = [], [], []
 
-        self.logprobs = []
-        self.state_values = []
-        self.rewards = []
+        # Optional: safer initializations
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, a=0.0, nonlinearity='relu')
+                nn.init.zeros_(m.bias)
 
-        self.optimizer = optim.Adam(self.parameters(), lr=self.config['lr'], betas=self.config['betas'])
-        self.to(self.device)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    @torch.no_grad()
+    def _sanitize(self, x):
+        x = torch.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6)
+        x.clamp_(-1e6, 1e6)
+        return x
 
-    def forward(self, state):
-        state = torch.tensor(state, device=self.device)
-        state = F.relu(self.network(state))
+    def forward(self, state_np):
+        x = torch.from_numpy(state_np).float().to(self.value_layer.weight.device)
+        x = self._sanitize(x)
 
-        state_value = self.value(state)
+        h = self.affine(x)                       # includes LayerNorm + ReLU
+        h = torch.nan_to_num(h)                  # belt & suspenders
 
-        action_probs = F.softmax(self.policy(state), dim=-1)
-        action_distribution = Categorical(action_probs)
-        action = action_distribution.sample()
-        
-        self.logprobs.append(action_distribution.log_prob(action))
-        self.state_values.append(state_value)
-        
+        logits = self.action_layer(h)
+        logits = torch.nan_to_num(logits)        # if any NaN slipped through
+        logits = logits - logits.max()           # stable softmax
+        probs  = torch.softmax(logits, dim=-1)
+
+        # final guard
+        if not torch.isfinite(probs).all():
+            # Zero-out non-finites and renormalize as an emergency fallback
+            probs = torch.where(torch.isfinite(probs), probs, torch.zeros_like(probs))
+            s = probs.sum()
+            probs = (probs + 1e-12) / (s + 1e-12)
+
+        dist   = Categorical(probs=probs)
+        action = dist.sample()
+
+        self.logprobs.append(dist.log_prob(action))
+        self.state_values.append(self.value_layer(h).squeeze(-1))
+
         return action.item()
 
 
     def calculateLoss(self, gamma=0.99):
-        if not (self.logprobs and self.state_values and self.rewards):
-            logger.error("Warning: Empty memory buffers!")
-            return torch.tensor(0.0, device=self.device)
         
-
         # calculating discounted rewards:
         rewards = []
         dis_reward = 0
@@ -195,29 +204,29 @@ class ActorCritic(nn.Module):
             rewards.insert(0, dis_reward)
                 
         # normalizing the rewards:
-       
-        rewards = torch.tensor(rewards).to(self.device)
-        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+        rewards = torch.tensor(rewards, device=self.device)
+        rewards = (rewards - rewards.mean()) / (rewards.std())
         
         loss = 0
         for logprob, value, reward in zip(self.logprobs, self.state_values, rewards):
             advantage = reward  - value.item()
             action_loss = -logprob * advantage
-            value_loss = F.smooth_l1_loss(value, reward.unsqueeze(0))
+            value_loss = F.smooth_l1_loss(value, reward)
             loss += (action_loss + value_loss)   
         return loss
+    
     
     def clearMemory(self):
         del self.logprobs[:]
         del self.state_values[:]
         del self.rewards[:]
 
-    def save_checkpoint(self, filename="actor_critic_checkpoint.pth"):
+    def save_checkpoint(self, optimizer:optim, filename="actor_critic_checkpoint.pth"):
         """Save model + optimizer for exact training resumption."""
         os.makedirs(self.config['save_path'], exist_ok=True)
         checkpoint = {
             'model_state_dict': self.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
             'config': self.config
         }
         save_path = os.path.join(self.config['save_path'], filename)
@@ -225,7 +234,7 @@ class ActorCritic(nn.Module):
         logger.info(f"[SAVE] Checkpoint saved to {save_path}")
 
 
-    def load_checkpoint(self, folder_name=None, filename="actor_critic_checkpoint.pth", load_optimizer=True):
+    def load_checkpoint(self, folder_name=None, filename="actor_critic_checkpoint.pth", optimizer=None, load_optimizer=True):
         """Load model + optimizer state."""
         if folder_name is not None:
             file_path = os.path.join(folder_name, filename)
@@ -238,7 +247,7 @@ class ActorCritic(nn.Module):
         checkpoint = torch.load(file_path, map_location=self.device)
         self.load_state_dict(checkpoint['model_state_dict'])
         if load_optimizer and 'optimizer_state_dict' in checkpoint:
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         logger.info(f"[LOAD] Checkpoint loaded from {file_path}")
         return True
     
