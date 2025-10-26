@@ -20,7 +20,7 @@ env = grid2op.make("l2rpn_case14_sandbox",
 converter = ActionConverter(env=env)
 
 config = {
-    "input_dim":env.observation_space.shape.sum(),
+    "input_dim":493, #env.observation_space.shape.sum(),
     "action_dim":converter.n,
     "gamma": 0.99,
     "lr": 0.0003,
