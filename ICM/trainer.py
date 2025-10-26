@@ -59,6 +59,7 @@ class Trainer:
             self.optimizer.zero_grad()
             loss = self.agent.calculateLoss(self.config['gamma'])
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.agent.parameters(), max_norm=0.5)
             self.optimizer.step()        
             self.agent.clearMemory()
 
