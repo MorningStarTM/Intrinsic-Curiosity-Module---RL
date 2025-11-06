@@ -20,7 +20,7 @@ env = grid2op.make("l2rpn_case14_sandbox",
 converter = ActionConverter(env=env)
 
 config = {
-    "input_dim":493, #env.observation_space.shape.sum(),
+    "input_dim":467, #env.observation_space.shape.sum(),
     "action_dim":converter.n,
     "gamma": 0.99,
     "lr": 0.0003,
@@ -79,11 +79,7 @@ def icm_actor_critic_train(icm_file="icm_230.pt", ac_file="icm_actor_critic_230.
         trainer.train(start=start, end=end)
 
 def icm_actor_critic_train_from_scratch(type='fit', start=None, end=None):
-    agent = ActorCritic(config=config)
-    
-    icm = ICM(config=config)
-    
-    trainer = ICMTrainer(agent=agent, icm=icm, env=env, converter=converter, config=config)
+    trainer = ICMTrainer(env=env, converter=converter, config=config)
     if type == 'fit':
         trainer.fit()
     else:
