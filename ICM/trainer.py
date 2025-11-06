@@ -3,7 +3,7 @@ from grid2op.Reward import L2RPNSandBoxScore
 from lightsim2grid import LightSimBackend
 from grid2op import Environment
 from ICM.converter import ActionConverter
-from ICM.actor_critic import ActorCritic, ActorCriticGAT
+from ICM.actor_critic import ActorCritic, ActorCriticGAT, ActorCriticUP
 from ICM.Utils.utils import save_episode_rewards
 from ICM.Utils.graph_builder import build_homogeneous_grid_graph, obs_to_pyg_data
 from ICM.icm import ICM
@@ -25,7 +25,7 @@ class Trainer:
         self.env = env
         self.config = config
         self.converter = converter
-        self.optimizer = self.agent.optimizer#optim.Adam(self.agent.parameters(), lr=self.config['lr'], betas=self.config['betas'])
+        self.optimizer = optim.Adam(self.agent.parameters(), lr=self.config['lr'], betas=self.config['betas'])
         self.best_survival_step = 0
         self.update_freq = self.config["update_freq"]#.get("update_freq", 512)
         self.step_counter = 0
@@ -65,7 +65,7 @@ class Trainer:
 
             # saving the model if episodes > 999 OR avg reward > 200 
             if i_episode != 0 and i_episode % 1000 == 0:
-                self.agent.save_checkpoint(filename="final_actor_critic.pt")    
+                self.agent.save_checkpoint(optimizer=self.optimizer, filename="final_actor_critic.pt")    
            
             
             if i_episode % 20 == 0:
@@ -198,13 +198,13 @@ class Trainer:
 
 
 class ICMTrainer:
-    def __init__(self, agent:ActorCritic, icm:ICM, env:Environment, converter:ActionConverter, config) -> None:
-        self.agent = agent
+    def __init__(self, env:Environment, converter:ActionConverter, config) -> None:
+        self.agent = ActorCriticUP()
         self.env = env
         self.config = config
         self.converter = converter
-        self.icm = icm
-        self.actor_optimizer = self.agent.optimizer#optim.Adam(self.agent.parameters(), lr=self.config['lr'], betas=self.config['betas'])
+        self.icm = ICM(config=config)
+        self.actor_optimizer = optim.Adam(self.agent.parameters(), lr=self.config['lr'], betas=self.config['betas'])
         self.icm_optimizer = self.icm.optimizer
         self.best_survival_step = 0
         self.episode_rewards = []
