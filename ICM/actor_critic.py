@@ -194,12 +194,15 @@ class ActorCriticUP(nn.Module):
         x = torch.from_numpy(state_np).float().to(self.value_layer.weight.device)
         x = self._sanitize(x)
 
+        if x.dim() == 1:                      # ensure [B, F]
+            x = x.unsqueeze(0)
+
         h = self.affine(x)                       # includes LayerNorm + ReLU
         h = torch.nan_to_num(h)                  # belt & suspenders
 
         logits = self.action_layer(h)
         logits = torch.nan_to_num(logits)        # if any NaN slipped through
-        logits = logits - logits.max()           # stable softmax
+        logits = logits - logits.max(dim=-1, keepdim=True).values           # stable softmax
         probs  = torch.softmax(logits, dim=-1)
 
         # final guard
@@ -212,7 +215,7 @@ class ActorCriticUP(nn.Module):
         dist   = Categorical(probs=probs)
         action = dist.sample()
 
-        self.logprobs.append(dist.log_prob(action))
+        self.logprobs.append(dist.log_prob(action).squeeze(-1))
         self.state_values.append(self.value_layer(h).squeeze(-1))
 
         return action.item()
