@@ -247,6 +247,7 @@ class ICMTrainer:
 
             #logger.info(f"Episode {i_episode} reward: {episode_total_reward}")  
             self.episode_rewards.append(episode_total_reward)  
+            self.episode_lenths.append(t + 1)
             # Updating the policy :
             self.actor_optimizer.zero_grad()
             self.icm_optimizer.zero_grad()
@@ -275,6 +276,8 @@ class ICMTrainer:
                 running_reward = 0
 
         save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward", filename="final_actor_critic_reward.npy")
+        np.save(os.path.join(self.episode_path, "final_actor_critic_lengths.npy"),
+                np.array(self.episode_lenths, dtype=np.int32)) 
         logger.info(f"reward saved at ICM\\episode_reward")
 
 
