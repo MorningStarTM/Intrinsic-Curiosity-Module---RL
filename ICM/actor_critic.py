@@ -92,6 +92,33 @@ class ActorCriticGAT(nn.Module):
             loss += (action_loss + value_loss)   
         return loss
     
+    def calculateLossUpdated(self, gamma=0.99, value_coef=0.5, entropy_coef=0.01):
+        # discounted returns
+        returns = []
+        g = 0.0
+        for r in reversed(self.rewards):
+            g = r + gamma * g
+            returns.insert(0, g)
+        returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
+    
+        # stabilize return normalization
+        returns = (returns - returns.mean()) / (returns.std(unbiased=False) + 1e-8)
+    
+        values = torch.stack(self.state_values).to(self.device).squeeze(-1)
+        logprobs = torch.stack(self.logprobs).to(self.device)
+    
+        advantages = returns - values.detach()
+        # advantage normalization helps a LOT with small/medium LR
+        advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+    
+        policy_loss = -(logprobs * advantages).mean()
+        value_loss  = F.smooth_l1_loss(values, returns)
+    
+        # crude entropy from logprobs; better is dist.entropy() if you also stored dist params
+        entropy = -(logprobs.exp() * logprobs).mean()
+    
+        return policy_loss + value_coef * value_loss - entropy_coef * entropy
+    
     def clearMemory(self):
         self.logprobs.clear()
         self.state_values.clear()
