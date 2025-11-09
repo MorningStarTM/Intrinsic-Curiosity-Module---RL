@@ -19,7 +19,7 @@ env = grid2op.make("l2rpn_case14_sandbox",
                    )
 converter = ActionConverter(env=env)
 
-config = {
+actor_config = {
     "input_dim":467, #env.observation_space.shape.sum(),
     "action_dim":converter.n,
     "gamma": 0.99,
@@ -33,6 +33,26 @@ config = {
     'beta':1e-4,
     'alpha':1e-4,
     'batch_size':256,
+    'intrinsic_reward_weight':1,
+    "episode_path":"ICM\episode_length",
+}
+
+
+icm_config = {
+    # model I/O sizes
+    "input_dim": 467,            # length of obs.to_vect()
+    "action_dim": 178,           # number of discrete actions (inverse head output)
+
+    # optimization
+    "icm_lr": 1e-4,              # Adam LR for ICM
+    "batch_size": 256,            # mini-batch size used in ICM.train()
+
+    # loss mixing / scaling
+    "beta": 0.2,                 # weight on forward-model MSE (1-beta on inverse CE)
+    "alpha": 0.01,               # intrinsic reward scale used in calc_loss()
+
+    # checkpoints
+    "save_path": "ICM\models",  # folder for save/load_checkpoint
     'intrinsic_reward_weight':1,
 }
 
@@ -52,13 +72,13 @@ graph_config = {
     'beta':1e-4,
     'alpha':1e-4,
     'batch_size':256,
-    'intrinsic_reward_weight':1,
+    
 }
 
 
 def actor_critic_train():
-    agent = ActorCritic(config=config)
-    trainer = Trainer(agent=agent, env=env, converter=converter, config=config)
+    agent = ActorCritic(config=actor_config)
+    trainer = Trainer(agent=agent, env=env, converter=converter, config=actor_config)
     trainer.train()
 
 def graph_actor_critic_train():
@@ -66,20 +86,24 @@ def graph_actor_critic_train():
     trainer = GraphAgentTrainer(agent=agent, env=env, converter=converter, config=graph_config)
     trainer.train()
 
+def icm_gat_train():
+    trainer = ICMTrainer(env=env, converter=converter, model_config=graph_config, icm_config=icm_config)
+    trainer.gat_icm_train()
 
-def icm_actor_critic_train(icm_file="icm_230.pt", ac_file="icm_actor_critic_230.pt", type='fit', start=None, end=None):
-    agent = ActorCritic(config=config)
-    agent.load_checkpoint(folder_name="ICM\\models", filename=ac_file)
-    icm = ICM(config=config)
-    icm.load_checkpoint(folder_name="ICM\\models", filename=icm_file)
-    trainer = ICMTrainer(agent=agent, icm=icm, env=env, converter=converter, config=config)
-    if type == 'fit':
-        trainer.fit()
-    else:
-        trainer.train(start=start, end=end)
+
+# def icm_actor_critic_train(icm_file="icm_230.pt", ac_file="icm_actor_critic_230.pt", type='fit', start=None, end=None):
+#     agent = ActorCritic(config=model_config)
+#     agent.load_checkpoint(folder_name="ICM\\models", filename=ac_file)
+#     icm = ICM(config=icm_configconfig)
+#     icm.load_checkpoint(folder_name="ICM\\models", filename=icm_file)
+#     trainer = ICMTrainer(agent=agent, icm=icm, env=env, converter=converter, icm_config=actor_config, model_config=actor_config)
+#     if type == 'fit':
+#         trainer.fit()
+#     else:
+#         trainer.train(start=start, end=end)
 
 def icm_actor_critic_train_from_scratch(type='fit', start=None, end=None):
-    trainer = ICMTrainer(env=env, converter=converter, config=config)
+    trainer = ICMTrainer(env=env, converter=converter, model_config=actor_config, icm_config=icm_config)
     if type == 'fit':
         trainer.fit()
     else:
@@ -110,6 +134,9 @@ def main():
     icm_ac_parser.add_argument("--start", type=int, default=None)
     icm_ac_parser.add_argument("--end", type=int, default=None)
 
+    gat_icm_parser = subparsers.add_parser("gat_icm")
+
+
 
     args = parser.parse_args()
 
@@ -120,20 +147,23 @@ def main():
         graph_actor_critic_train()
 
 
-    elif args.mode == "icm":
-        icm_actor_critic_train(
-            icm_file=args.icm_file,
-            ac_file=args.ac_file,
-            type=args.type,
-            start=args.start,
-            end=args.end,
-        )
+    # elif args.mode == "icm":
+    #     icm_actor_critic_train(
+    #         icm_file=args.icm_file,
+    #         ac_file=args.ac_file,
+    #         type=args.type,
+    #         start=args.start,
+    #         end=args.end,
+    #     )
     elif args.mode == "icm_ac_scratch":
         icm_actor_critic_train_from_scratch(
             type=args.type,
             start=args.start,
             end=args.end,
         )
+    
+    elif args.mode == "gat_icm":
+        icm_gat_train()
 
 if __name__ == "__main__":
     main()
