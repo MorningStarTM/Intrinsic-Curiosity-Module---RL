@@ -266,7 +266,7 @@ class ICMTrainer:
 
             # saving the model if episodes > 999 OR avg reward > 200 
             if i_episode != 0 and i_episode % 1000 == 0:
-                self.agent.save_checkpoint(filename="final_actor_critic.pt")    
+                self.agent.save_checkpoint(optimizer=self.actor_optimizer, filename="final_actor_critic.pt")    
                 self.icm.save_checkpoint(filename="final_icm.pt")
            
             
