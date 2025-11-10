@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import torch
 import os
+import torch.nn.functional as F
 
 
 class Trainer:
@@ -198,14 +199,19 @@ class Trainer:
 
 
 class ICMTrainer:
-    def __init__(self, env:Environment, converter:ActionConverter, model_config, icm_config) -> None:
-        self.agent = ActorCriticUP()
+    def __init__(self, env:Environment, converter:ActionConverter, agent_type:str, model_config, icm_config) -> None:
+        if agent_type == 'GAT':
+            self.agent = ActorCriticGAT(config=model_config)
+            self.actor_optimizer = self.agent.optimizer
+        else:
+            self.agent = ActorCriticUP()
+            self.actor_optimizer = optim.Adam(self.agent.parameters(), lr=self.model_config['lr'], betas=self.model_config['betas'])
         self.env = env
         self.model_config = model_config
         self.icm_config = icm_config
         self.converter = converter
         self.icm = ICM(config=self.icm_config)
-        self.actor_optimizer = optim.Adam(self.agent.parameters(), lr=self.model_config['lr'], betas=self.model_config['betas'])
+        
         self.icm_optimizer = self.icm.optimizer
         self.best_survival_step = 0
         self.episode_rewards = []
@@ -286,24 +292,24 @@ class ICMTrainer:
     # ---------------- NEW: GAC + ICM training ----------------
     def gat_icm_train(self):
         """
-        Train Graph Actor-Critic with Intrinsic Curiosity Module (ICM).
-        
+        Train Graph Actor-Critic with Intrinsic Curiosity Module (ICM),
+        using ICM.encode(.), ICM.action_onehot(.), and recomputing forward/inverse
+        during ICM.learn().
         """
-        self.icm = ICM(config=self.icm_config)
-        logger.info("Initialized ICM module for GAT + ICM training.")
-        self.agent = ActorCriticGAT(config=self.model_config)
-        logger.info("Initialized Graph Actor-Critic agent.")
-        actor_optimizer = self.agent.optimizer                               # keep your agent’s configured optimizer
-        icm_optimizer = self.icm.optimizer
+        agent = self.agent
+        icm   = self.icm
+
+        actor_optimizer = self.actor_optimizer
+        icm_optimizer   = self.icm_optimizer
 
         update_every = self.model_config["update_freq"]
-        gamma = self.model_config['gamma']
-        eta = self.icm_config['intrinsic_reward_weight']
-        max_ep_len = self.model_config['max_ep_len']
-        episodes = self.model_config['episodes']
+        gamma        = self.model_config['gamma']
+        eta          = self.icm_config['intrinsic_reward_weight']
+        max_ep_len   = self.model_config['max_ep_len']
+        episodes     = self.model_config['episodes']
 
         self.episode_rewards = []
-        self.episode_lenths = []
+        self.episode_lenths  = []
         self.episode_reasons = []
 
         running_reward = 0.0
@@ -312,120 +318,112 @@ class ICMTrainer:
             obs = self.env.reset()
             done = False
             info = {}
-            ep_ext_reward = 0.0
+            ep_ext_reward   = 0.0
             ep_total_reward = 0.0
 
             for t in range(max_ep_len):
-                # ----- build graph -----
+                # ---------- build graph ----------
                 data = build_homogeneous_grid_graph(
-                    obs, self.env, device=self.agent.device, danger_thresh=0.98
+                    obs, self.env, device=agent.device, danger_thresh=0.98
                 )
                 if getattr(data, "num_nodes", 0) == 0:
                     logger.warning("Graph has no nodes")
-                    data.x = torch.zeros(1, self.agent.config['input_dim'], device=self.agent.device)
-                    data.edge_index = torch.empty(2, 0, dtype=torch.long, device=self.agent.device)
+                    data.x = torch.zeros(1, agent.config['input_dim'], device=agent.device)
+                    data.edge_index = torch.empty(2, 0, dtype=torch.long, device=agent.device)
 
-                batch = getattr(data, "batch",
-                                torch.zeros(data.num_nodes, dtype=torch.long, device=self.agent.device))
+                batch = getattr(
+                    data, "batch",
+                    torch.zeros(data.num_nodes, dtype=torch.long, device=agent.device)
+                )
 
-                # ----- policy forward -----
-                policy_action = self.agent(data.x, data.edge_index, batch)
+                # ---------- policy step ----------
+                policy_action = agent(data.x, data.edge_index, batch)  # int
 
-                # step env with converted action (external / task reward)
+                # env step
                 obs_, ext_reward, done, info = self.env.step(self.converter.act(policy_action))
                 ep_ext_reward += float(ext_reward)
 
-                # ----- ICM forward & intrinsic reward -----
-                # NOTE: we pass the raw obs objects as in ICMTrainer
-                state_, pred_next_state, action_hat = self.icm(policy_action, obs, obs_)
-                intrinsic_reward = self.icm.calc_loss(state_=state_, pred_state=pred_next_state)
+                # ---------- ICM: encode + intrinsic (NO grad here) ----------
+                phi_s      = icm.encode(obs)        # [512]
+                phi_s_next = icm.encode_next(obs_)  # [512]
 
-                # remember for ICM loss (inverse+forward heads)
-                self.icm.memory.remember(
-                    state_=state_, pred_state=pred_next_state, actions=policy_action, pred_actions=action_hat
-                )
+                with torch.no_grad():
+                    phi_s      = icm.encode_batch([obs.to_vect()]).squeeze(0)
+                    phi_s_next = icm.encode_batch([obs_.to_vect()]).squeeze(0)
+                    a_oh       = F.one_hot(torch.tensor([int(policy_action)], device=icm.device), icm.action_dim).float().squeeze(0)
+                    phi_hat    = icm.forward_model(torch.cat([phi_s, a_oh], dim=-1))
+                    intrinsic_reward = (icm.config['alpha'] * 0.5 * (phi_s_next - phi_hat).pow(2).mean()).item()
 
-                # combine rewards
-                total_reward = float(ext_reward) + float(intrinsic_reward.item()) * eta
 
-                # store for policy loss (your ActorCriticGAT should consume .rewards)
-                self.agent.rewards.append(total_reward)
+                # remember tuple for ICM learning (DO NOT store predictions)
+                icm.memory.remember(obs, obs_, int(policy_action))
+
+                # total reward to policy
+                total_reward = float(ext_reward) + eta * float(intrinsic_reward)
+                agent.rewards.append(total_reward)
                 ep_total_reward += total_reward
 
                 # next state
                 obs = obs_
 
-                # ----- periodic policy/ICM updates -----
+                # ---------- periodic updates ----------
                 if ((t + 1) % update_every == 0) or done:
                     actor_optimizer.zero_grad(set_to_none=True)
                     icm_optimizer.zero_grad(set_to_none=True)
 
-                    # ICM loss (forward + inverse)
-                    icm_loss = self.icm.learn()
-
-                    # policy loss (A2C-style from .rewards buffer)
-                    policy_loss = self.agent.calculateLoss(gamma)
-                    total_loss = policy_loss + icm_loss
+                    icm_loss    = icm.learn()
+                    # prefer the numerically stable loss you already wrote
+                    policy_loss = agent.calculateLossUpdated(gamma=gamma, value_coef=0.5, entropy_coef=0.01)
+                    total_loss  = policy_loss + icm_loss
 
                     total_loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.agent.parameters(), 1.0)
-                    torch.nn.utils.clip_grad_norm_(self.icm.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(agent.parameters(), 1.0)
+                    torch.nn.utils.clip_grad_norm_(icm.parameters(),   1.0)
 
                     actor_optimizer.step()
                     icm_optimizer.step()
 
-                    self.agent.clearMemory()
-                    self.icm.memory.clear_memory()
+                    agent.clearMemory()
+                    icm.memory.clear_memory()
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
 
                 if done:
                     break
 
-            # ----- episode bookkeeping -----
-            logger.info(f"Episode {i_episode} steps : {t+1} reward: total={ep_total_reward:.3f} (ext={ep_ext_reward:.3f}, eta={eta})")
+            # ---------- episode bookkeeping ----------
+            logger.info(f"Episode {i_episode} steps: {t+1} reward: total={ep_total_reward:.3f} "
+                        f"(ext={ep_ext_reward:.3f}, eta={eta})")
             self.episode_rewards.append(ep_total_reward)
 
-            # best-effort reason tagging (same logic as your original trainer)
             reason = "done" if done else "max_ep_len"
             if isinstance(info, dict):
-                if info.get("is_illegal", False):
-                    reason = "illegal"
-                elif info.get("is_ambiguous", False):
-                    reason = "ambiguous"
-                elif info.get("is_blackout", False):
-                    reason = "blackout"
-                elif info.get("is_game_over", False):
-                    reason = "game_over"
+                if info.get("is_illegal", False):         reason = "illegal"
+                elif info.get("is_ambiguous", False):     reason = "ambiguous"
+                elif info.get("is_blackout", False):      reason = "blackout"
+                elif info.get("is_game_over", False):     reason = "game_over"
                 elif info.get("is_last", False) or info.get("is_final_observation", False):
                     reason = "end_of_chronic"
 
-            self.episode_lenths.append(t + 1)     
+            self.episode_lenths.append(t + 1)
             self.episode_reasons.append(reason)
 
-            # save checkpoints periodically
             if i_episode != 0 and (i_episode % 1000 == 0):
-                self.agent.save_checkpoint(filename="gat_actor_critic_icm.pt")
-                self.icm.save_checkpoint(filename="icm_for_gac.pt")
+                agent.save_checkpoint(filename="gat_actor_critic_icm.pt")
+                icm.save_checkpoint(filename="icm_for_gac.pt")
 
-            # rolling log
             running_reward += ep_total_reward
             if (i_episode + 1) % 20 == 0:
                 avg20 = running_reward / 20.0
                 logger.info(f"Episode {i_episode}\tavg20_reward: {avg20:.3f}\tlen: {t}\tlast_total: {ep_total_reward:.3f}")
                 running_reward = 0.0
 
-        # ----- persist metrics -----
-        # rewards (for quick reuse with your existing plotting path)
+        # ---------- persist metrics ----------
         save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward",
-                             filename="actor_critic_gat_icm_reward.npy")
-        logger.info("reward saved at ICM\\episode_reward")
-
-        # lengths (STEPS PER EPISODE) as .npy  <-- required for your plots
+                            filename="actor_critic_gat_icm_reward.npy")
         np.save(os.path.join(self.episode_path, "actor_critic_gat_icm_lengths.npy"),
                 np.array(self.episode_lenths, dtype=np.int32))
 
-        # CSV with episode stats
         df = pd.DataFrame({
             "episode": list(range(len(self.episode_rewards))),
             "reward": self.episode_rewards,
@@ -435,6 +433,7 @@ class ICMTrainer:
         csv_path = os.path.join(self.episode_path, "actor_critic_gat_icm_stats.csv")
         df.to_csv(csv_path, index=False)
         logger.info(f"Saved training stats to {csv_path}")
+
 
 
     def train(self, start=0, end=10):
