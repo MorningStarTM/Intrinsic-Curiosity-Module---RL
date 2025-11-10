@@ -87,7 +87,7 @@ def graph_actor_critic_train():
     trainer.train()
 
 def icm_gat_train():
-    trainer = ICMTrainer(env=env, converter=converter, model_config=graph_config, icm_config=icm_config)
+    trainer = ICMTrainer(env=env, converter=converter, agent_type='GAT', model_config=graph_config, icm_config=icm_config)
     trainer.gat_icm_train()
 
 
