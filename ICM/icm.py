@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
-from ICM.memory import Memory
+from ICM.memory import Memory, GraphMemory
 from ICM.Utils.logger import logger
 
 
@@ -193,3 +193,129 @@ class ICM(nn.Module):
 
 
 
+class GraphACICM(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.action_dim = config['action_dim']
+
+        # encoders to 512-d feature space
+        self.encoder = nn.Sequential(
+            nn.Linear(config['input_dim'], 512),
+            nn.ReLU(),
+            nn.LayerNorm(512)
+        )
+        self.phi_s_n = nn.Linear(config['input_dim'], 512)
+
+        # inverse: [phi(s) || phi(s')] -> a_logits
+        self.inverse_model = nn.Sequential(
+            nn.Linear(1024, 512), nn.ReLU(),
+            nn.Linear(512, 256),  nn.ReLU(),
+            nn.Linear(256, self.action_dim)
+        )
+
+        # forward: [phi(s) || one_hot(a)] -> phi_hat(s')
+        self.forward_model = nn.Sequential(
+            nn.Linear(512 + self.action_dim, 512), nn.ReLU(),
+            nn.Linear(512, 1024), nn.ReLU(),
+            nn.Linear(1024, 512)
+        )
+
+        self.optimizer = optim.Adam(self.parameters(), lr=config['icm_lr'])
+        self.memory = Memory(capacity=config.get('replay_capacity', 50000))
+        self.to(self.device)
+
+    
+    def forward(self, action_idx, state, next_state):
+        """
+        action_idx: int or 1D LongTensor [B]
+        state, next_state: Grid2Op obs (scalar) or list/tuple of obs (batch)
+
+        Returns:
+            phi_s          : [B, 512]   encoded current features
+            phi_s_next     : [B, 512]   encoded next features
+            inv_logits     : [B, A]     inverse-model logits for action
+            phi_hat_next   : [B, 512]   forward-model predicted next features
+        """
+        # ---- to batch ----
+        if isinstance(state, (list, tuple)):
+            s_list  = [self._to_tensor(o)  for o in state]
+            sn_list = [self._to_tensor(o)  for o in next_state]
+            s  = torch.stack(s_list,  dim=0)  # [B, F]
+            sn = torch.stack(sn_list, dim=0)  # [B, F]
+        else:
+            s  = self._to_tensor(state).unsqueeze(0)      # [1, F]
+            sn = self._to_tensor(next_state).unsqueeze(0) # [1, F]
+
+        phi_s      = self.phi_s(s)        # [B,512]
+        phi_s_next = self.phi_s_n(sn)     # [B,512]
+
+        # ---- inverse head: predict action from (phi_s || phi_s_next)
+        inv_logits = self.inverse_model(torch.cat([phi_s, phi_s_next], dim=-1))  # [B,A]
+
+        # ---- forward head: (phi_s || one_hot(a)) -> phi_hat_next
+        if not torch.is_tensor(action_idx):
+            action_idx = torch.tensor([int(action_idx)], dtype=torch.long, device=self.device)  # [1]
+        else:
+            action_idx = action_idx.to(self.device).view(-1)  # [B]
+
+        a_oh = F.one_hot(action_idx, num_classes=self.action_dim).float()        # [B,A]
+        phi_hat_next = self.forward_model(torch.cat([phi_s, a_oh], dim=-1))      # [B,512]
+
+        return phi_s, phi_s_next, inv_logits, phi_hat_next
+
+    # ---------- helpers ----------
+    def _to_tensor_vec(self, v):
+        v = torch.as_tensor(v, dtype=torch.float32, device=self.device)
+        return v
+
+    def encode_batch(self, obs_vec_list):
+        x = torch.stack([self._to_tensor_vec(v) for v in obs_vec_list], dim=0)  # [B,F]
+        return self.encoder(x)  # [B,512]
+    
+    def encode(self, obs):
+        """
+        Accepts a Grid2Op obs or a precomputed vector; returns φ(s) as [512].
+        """
+        vec = obs.to_vect() if hasattr(obs, "to_vect") else obs
+        x = torch.as_tensor(vec, dtype=torch.float32, device=self.device).unsqueeze(0)  # [1,F]
+        return self.encoder(x).squeeze(0)  # [512]
+
+    def encode_next(self, obs_next):
+        # Using the same shared encoder; kept for backwards compatibility.
+        return self.encode(obs_next)
+
+    def action_onehot_batch(self, idx_tensor):
+        return F.one_hot(idx_tensor, num_classes=self.action_dim).float()
+
+    def intrinsic(self, phi_next, phi_hat_next):
+        # 0.5 * ||·||^2 is common; keep alpha as scale
+        return self.config['alpha'] * 0.5 * F.mse_loss(phi_hat_next, phi_next, reduction='none').mean()
+
+    # ---------- learning step ----------
+    def _to_index_tensor(self, a_list):
+        idx = [int(a.detach().view(-1)[0].item()) if torch.is_tensor(a) else int(a) for a in a_list]
+        return torch.tensor(idx, dtype=torch.long, device=self.device)
+
+    def learn(self):
+        obs_list, obs_next_list, a_list = self.memory.sample_memory(self.config.get('batch_size'))
+        if len(obs_list) == 0:
+            return torch.zeros((), device=self.device)
+
+        # Re-encode with CURRENT encoder (grads flow into encoder)
+        phi_s      = self.encode_batch(obs_list)       # [B,512]
+        phi_s_next = self.encode_batch(obs_next_list)  # [B,512]
+        a_idx      = self._to_index_tensor(a_list)     # [B]
+        a_oh       = self.action_onehot_batch(a_idx)   # [B,A]
+
+        # inverse loss
+        inv_logits = self.inverse_model(torch.cat([phi_s, phi_s_next], dim=-1))  # [B,A]
+        Li = (1.0 - self.config['beta']) * F.cross_entropy(inv_logits, a_idx)
+
+        # forward loss
+        phi_hat_next = self.forward_model(torch.cat([phi_s, a_oh], dim=-1))      # [B,512]
+        Lf = self.config['beta'] * F.mse_loss(phi_hat_next, phi_s_next)
+
+        return Li + Lf
