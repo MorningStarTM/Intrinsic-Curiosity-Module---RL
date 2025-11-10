@@ -259,7 +259,7 @@ class ActorCriticUP(nn.Module):
         os.makedirs("models", exist_ok=True)
         checkpoint = {
             'model_state_dict': self.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict()
+            'optimizer_state_dict': optimizer.state_dict()
         }
         save_path = os.path.join("models", filename)
         torch.save(checkpoint, save_path)
