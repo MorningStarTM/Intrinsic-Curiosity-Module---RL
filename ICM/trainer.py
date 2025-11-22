@@ -300,7 +300,7 @@ class ICMTrainer:
 
     
     # ---------------- NEW: GAC + ICM training ----------------
-    def gat_icm_train(self, chronics_per_batch=10):
+    def gat_icm_train(self, chronics_per_batch=10, episodes_per_batch=None):
         """
         Train Graph Actor-Critic with Intrinsic Curiosity Module (ICM),
         but do it in batches of chronics to reduce compute (e.g. 10 chronics at a time).
@@ -438,7 +438,7 @@ class ICMTrainer:
 
                 # ---------- episode bookkeeping ----------
                 logger.info(f"Episode {i_episode} steps: {t+1} reward: total={ep_total_reward:.3f} "
-                            f"(ext={ep_ext_reward:.3f}, eta={eta})")
+                            f"(ext={ep_ext_reward:.3f}, eta={eta}) Chronic id : {self.env.chronics_handler.get_name()}")
                 self.episode_rewards.append(ep_total_reward)
 
                 reason = "done" if done else "max_ep_len"
@@ -464,20 +464,20 @@ class ICMTrainer:
                     running_reward = 0.0
 
         # ---------- persist metrics ----------
-    save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward",
-                        filename="actor_critic_gat_icm_reward.npy")
-    np.save(os.path.join(self.episode_path, "actor_critic_gat_icm_lengths.npy"),
-            np.array(self.episode_lenths, dtype=np.int32))
+        save_episode_rewards(self.episode_rewards, save_dir="ICM\\episode_reward",
+                            filename="actor_critic_gat_icm_reward.npy")
+        np.save(os.path.join(self.episode_path, "actor_critic_gat_icm_lengths.npy"),
+                np.array(self.episode_lenths, dtype=np.int32))
 
-    df = pd.DataFrame({
-        "episode": list(range(len(self.episode_rewards))),
-        "reward": self.episode_rewards,
-        "length": self.episode_lenths,
-        "reason": self.episode_reasons
-    })
-    csv_path = os.path.join(self.episode_path, "actor_critic_gat_icm_stats.csv")
-    df.to_csv(csv_path, index=False)
-    logger.info(f"Saved training stats to {csv_path}")
+        df = pd.DataFrame({
+            "episode": list(range(len(self.episode_rewards))),
+            "reward": self.episode_rewards,
+            "length": self.episode_lenths,
+            "reason": self.episode_reasons
+        })
+        csv_path = os.path.join(self.episode_path, "actor_critic_gat_icm_stats.csv")
+        df.to_csv(csv_path, index=False)
+        logger.info(f"Saved training stats to {csv_path}")
 
 
 
