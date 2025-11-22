@@ -224,7 +224,7 @@ class GraphACICM(nn.Module):
         )
 
         self.optimizer = optim.Adam(self.parameters(), lr=config['icm_lr'])
-        self.memory = Memory(capacity=config.get('replay_capacity', 50000))
+        self.memory = GraphMemory(capacity=config.get('replay_capacity', 50000))
         self.to(self.device)
 
     
